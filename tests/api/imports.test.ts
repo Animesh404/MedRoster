@@ -4,6 +4,7 @@ import type { ImportRowResult } from '@prisma/client'
 import { runStaffImport } from '@/lib/import'
 import { applyStaffImport } from '@/lib/import/apply'
 import { paginate, type Page } from '@/lib/db/paginate'
+import { importRowSchema, importStatsSchema } from '@/lib/contracts/imports'
 import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
 
 // Route handlers call `prisma` imported from '@/lib/db/client', which in
@@ -108,6 +109,9 @@ describe('POST /api/imports', () => {
     expect(res.status).toBe(201)
     const body = await res.json() as { runId: number; stats: { accepted: number; merged: number; rejected: number; total: number } }
     expect(body.stats).toEqual({ accepted: 34, merged: 3, rejected: 4, total: 41 })
+    // MINOR-1: the contract is declared but never enforced anywhere unless a
+    // test actually parses a real response against it.
+    importStatsSchema.parse(body.stats)
 
     const db = await getTestDb()
     const users = await db.user.count({ where: { role: 'STAFF' } })
@@ -200,6 +204,27 @@ describe('POST /api/imports', () => {
     expect(body.error.code).toBe('INVALID_INPUT')
   })
 
+  it('cleanly rejects a NUL byte in the *filename* instead of 500ing on ImportRun.create (CRIT-1)', async () => {
+    await asManager()
+    const db = await getTestDb()
+    // Content is clean valid CSV — only the filename carries the NUL byte.
+    // Without a guard, this reaches `ImportRun.create({ data: { filename } })`
+    // inside the transaction and Postgres rejects it with 22021 ("invalid
+    // byte sequence for encoding UTF8: 0x00"), which withAuth's boundary
+    // turns into a bare 500 instead of a clean 400.
+    const form = new FormData()
+    form.set('kind', 'STAFF')
+    form.set('file', new File(['staff_id,full_name,role,email'], 'evil\0.csv', { type: 'text/csv' }))
+
+    const res = await importsPost(uploadReq('http://localhost/api/imports', form), noParams)
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: { code: string } }
+    expect(body.error.code).toBe('INVALID_INPUT')
+
+    // The transaction must never have started — no partial ImportRun row.
+    expect(await db.importRun.count()).toBe(0)
+  })
+
   it('cleanly rejects garbage bytes without NULs as an all-rejected report, not a crash', async () => {
     await asManager()
     // No NUL bytes here, so this exercises the "let the importer's own row
@@ -263,6 +288,9 @@ describe('GET /api/imports/:runId', () => {
     const body = await res.json() as { run: { id: number }; items: unknown[] }
     expect(body.run.id).toBe(runId)
     expect(body.items).toHaveLength(41)
+    // MINOR-1: enforce importRowSchema against a real response instead of
+    // leaving it an aspirational, never-parsed contract.
+    body.items.forEach((item) => importRowSchema.parse(item))
 
     const rejectedOnly = await importGet(
       new Request(`http://localhost/api/imports/${runId}?limit=50&outcome=REJECTED`),

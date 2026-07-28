@@ -31,6 +31,20 @@ export type Requirements = z.infer<typeof requirementsSchema>
 const MAX_PG_INT = 2_147_483_647
 
 /**
+ * Postgres `bigint`'s upper bound — the sibling of `MAX_PG_INT` above, for
+ * the `EventOutbox.id` column (a `bigint`, not an `Int`). Without this,
+ * `eventsSinceQuerySchema`'s `id` field accepts a digit string of any
+ * length; Prisma passes it straight through to `BigInt(...)`, and a value
+ * beyond this bound throws `P2020` once it reaches the query engine — the
+ * same class of "unbounded digit string reaches the database and 500s" bug
+ * `parseDbId` and `decodeCursor` already guard against for `Int` columns.
+ */
+// `BigInt(...)` call, not a `9223372036854775807n` literal: this project's
+// `tsconfig.json` targets ES2017, where BigInt literal syntax doesn't
+// type-check even though the runtime (Node) supports it fine.
+export const MAX_PG_BIGINT = BigInt('9223372036854775807')
+
+/**
  * Strictly parses a route path segment as a valid Postgres `Int` id.
  *
  * `Number.isInteger(Number(raw))` (the pattern this replaces) is far looser
