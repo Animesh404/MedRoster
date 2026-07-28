@@ -1,38 +1,92 @@
-import { readFileSync } from 'node:fs'
-import { getDMMF } from '@prisma/internals'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { readFileSync, readdirSync } from 'node:fs'
+import path from 'node:path'
+import { describe, expect, it } from 'vitest'
 
-// NOTE: Prisma 7's generated `@prisma/client` runtime DMMF (`Prisma.dmmf`) is
-// intentionally slimmed down for bundle size and no longer carries
-// `uniqueFields`/index metadata on models. We parse the schema with
-// `@prisma/internals#getDMMF` (the same engine the CLI uses) to get the full
-// DMMF the brief's assertions depend on. See task-2-report.md for details.
-describe('prisma schema', () => {
-  let models: Awaited<ReturnType<typeof getDMMF>>['datamodel']['models']
+/**
+ * This test asserts against the *applied* migration SQL under each
+ * `prisma/migrations/<dir>/migration.sql` instead of re-parsing `schema.prisma`.
+ *
+ * Reparsing the schema only proves schema.prisma *declares* the right
+ * constraints — it can't catch drift between schema.prisma and the migration
+ * that was actually generated and applied to the database. Asserting on the
+ * generated SQL closes that gap, and it's what later tasks (the double-claim
+ * race guard, the CSV upsert-on-externalId importer) actually depend on at
+ * runtime.
+ *
+ * All migration directories are read and concatenated in filename
+ * (timestamp-prefixed) order, so this test does not hardcode a single
+ * migration and will not rot when a later migration adds or alters columns.
+ */
 
-  beforeAll(async () => {
-    const datamodel = readFileSync('prisma/schema.prisma', 'utf-8')
-    const dmmf = await getDMMF({ datamodel })
-    models = dmmf.datamodel.models
-  })
+const MIGRATIONS_DIR = path.join(process.cwd(), 'prisma', 'migrations')
 
-  const byName = (n: string) => models.find((m) => m.name === n)
+function readAllMigrationSql(): string {
+  const dirs = readdirSync(MIGRATIONS_DIR, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort()
 
+  if (dirs.length === 0) {
+    throw new Error(`No migration directories found under ${MIGRATIONS_DIR}`)
+  }
+
+  return dirs
+    .map((dir) => readFileSync(path.join(MIGRATIONS_DIR, dir, 'migration.sql'), 'utf-8'))
+    .join('\n')
+}
+
+const sql = readAllMigrationSql()
+
+/** Returns the column/constraint body of a table's CREATE TABLE statement. */
+function tableBody(table: string): string {
+  const match = sql.match(new RegExp(`CREATE TABLE "${table}" \\(([\\s\\S]*?)\\);`))
+  if (!match || match[1] === undefined) {
+    throw new Error(`CREATE TABLE "${table}" not found in any applied migration`)
+  }
+  return match[1]
+}
+
+describe('applied migration SQL', () => {
   it('defines every model the spec requires', () => {
-    for (const n of ['User','Shift','ShiftRequirement','Claim','ShiftSeries','ImportRun','ImportRowResult','EventOutbox']) {
-      expect(byName(n), `missing model ${n}`).toBeDefined()
+    for (const table of [
+      'User',
+      'Shift',
+      'ShiftRequirement',
+      'Claim',
+      'ShiftSeries',
+      'ImportRun',
+      'ImportRowResult',
+      'EventOutbox',
+    ]) {
+      expect(sql, `missing CREATE TABLE "${table}"`).toMatch(new RegExp(`CREATE TABLE "${table}" \\(`))
     }
   })
 
   it('makes a user unable to hold the same shift twice', () => {
-    expect(byName('Claim')!.uniqueFields).toContainEqual(['shiftId', 'userId'])
+    expect(sql).toMatch(/CREATE UNIQUE INDEX "Claim_shiftId_userId_key" ON "Claim"\("shiftId", "userId"\)/)
   })
 
   it('allows only one requirement row per profession per shift', () => {
-    expect(byName('ShiftRequirement')!.uniqueFields).toContainEqual(['shiftId', 'profession'])
+    expect(sql).toMatch(
+      /CREATE UNIQUE INDEX "ShiftRequirement_shiftId_profession_key" ON "ShiftRequirement"\("shiftId", "profession"\)/,
+    )
   })
 
   it('versions shifts so edit previews can detect concurrent writes', () => {
-    expect(byName('Shift')!.fields.find((f) => f.name === 'version')).toBeDefined()
+    expect(tableBody('Shift')).toMatch(/"version"\s+INTEGER\s+NOT NULL/)
+  })
+
+  it('lets the CSV importer upsert users and shifts on their external id', () => {
+    expect(sql).toMatch(/CREATE UNIQUE INDEX "User_externalId_key" ON "User"\("externalId"\)/)
+    expect(sql).toMatch(/CREATE UNIQUE INDEX "Shift_externalId_key" ON "Shift"\("externalId"\)/)
+  })
+
+  it('cascades shift deletion to its claims and requirements', () => {
+    expect(sql).toMatch(
+      /ALTER TABLE "Claim" ADD CONSTRAINT "Claim_shiftId_fkey" FOREIGN KEY \("shiftId"\) REFERENCES "Shift"\("id"\) ON DELETE CASCADE/,
+    )
+    expect(sql).toMatch(
+      /ALTER TABLE "ShiftRequirement" ADD CONSTRAINT "ShiftRequirement_shiftId_fkey" FOREIGN KEY \("shiftId"\) REFERENCES "Shift"\("id"\) ON DELETE CASCADE/,
+    )
   })
 })
