@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseShiftRows, SHIFT_RULES } from '@/lib/import/shifts'
-import { collectLegend, createFieldRule, STRUCTURAL_RULES } from '@/lib/import/registry'
+import { collectLegend, createFieldRule, SHIFT_WINDOW_RULES, STRUCTURAL_RULES } from '@/lib/import/registry'
 
 const HEADER = 'shift_id,date,start_time,end_time,requirements\n'
 const one = (line: string) => parseShiftRows(HEADER + line + '\n')[0]!
@@ -130,6 +130,55 @@ describe('parseShiftRows — reporting', () => {
   })
 })
 
+describe('parseShiftRows — whitespace repairs (review Finding 1 regression)', () => {
+  // Regression guard: dateRule's ISO branch and makeTimeRule's run used to
+  // only ever call `fatal(...)`, with no `repairing(...)` path at all — so a
+  // cell whose ONLY defect was surrounding whitespace was trimmed with ZERO
+  // manager-facing evidence. The slash/dash date branch caught it only
+  // incidentally, as a side effect of its DATE_FORMAT repair.
+
+  it('emits a whitespace repair for a padded ISO date with no other defect', () => {
+    const r = one('9005,2026-08-18 ,08:00,16:00,nurses=1;doctors=1;receptionists=1')
+    expect(r.record).not.toBeNull()
+    const ws = r.issues.filter((i) => i.code === 'DATE_WHITESPACE')
+    expect(ws).toHaveLength(1)
+    expect(ws[0]).toMatchObject({ field: 'date', before: '2026-08-18 ', after: '2026-08-18' })
+  })
+
+  it('emits a whitespace repair for a padded start_time', () => {
+    const r = one('9006,2026-08-18, 08:00 ,16:00,nurses=1;doctors=1;receptionists=1')
+    expect(r.record).not.toBeNull()
+    const ws = r.issues.filter((i) => i.code === 'TIME_WHITESPACE')
+    expect(ws).toHaveLength(1)
+    expect(ws[0]).toMatchObject({ field: 'start_time', before: ' 08:00 ', after: '08:00' })
+  })
+
+  it('emits a whitespace repair for a padded end_time', () => {
+    const r = one('9007,2026-08-18,08:00, 16:00 ,nurses=1;doctors=1;receptionists=1')
+    expect(r.record).not.toBeNull()
+    const ws = r.issues.filter((i) => i.code === 'TIME_WHITESPACE')
+    expect(ws).toHaveLength(1)
+    expect(ws[0]).toMatchObject({ field: 'end_time', before: ' 16:00 ', after: '16:00' })
+  })
+
+  it('emits a whitespace repair for a padded requirements cell', () => {
+    const r = one('9008,2026-08-18,08:00,16:00, nurses=1;doctors=1;receptionists=1 ')
+    expect(r.record).not.toBeNull()
+    const ws = r.issues.filter((i) => i.code === 'REQUIREMENTS_WHITESPACE')
+    expect(ws).toHaveLength(1)
+    expect(ws[0]).toMatchObject({
+      field: 'requirements',
+      before: ' nurses=1;doctors=1;receptionists=1 ',
+      after: 'nurses=1;doctors=1;receptionists=1',
+    })
+  })
+
+  it('emits no whitespace repair for a clean row', () => {
+    const r = one('9009,2026-08-18,08:00,16:00,nurses=1;doctors=1;receptionists=1')
+    expect(r.issues).toEqual([])
+  })
+})
+
 describe('SHIFT_RULES — registry legend (Amendment A)', () => {
   it('throws when a duplicate descriptor disagrees about what a code means', () => {
     const conflicting = createFieldRule({
@@ -144,13 +193,14 @@ describe('SHIFT_RULES — registry legend (Amendment A)', () => {
     expect(() => collectLegend([...SHIFT_RULES, conflicting])).toThrow()
   })
 
-  it('every issue code parseShiftRows can emit — including BAD_ARITY, OVERNIGHT_ROLLOVER, ' +
-     'EXPLICIT_NEXT_DAY and DURATION_TOO_LONG, which are pushed directly by parseShiftRows ' +
-     'rather than by any single-cell FieldRule — is covered by collectLegend(SHIFT_RULES) ' +
-     'combined with STRUCTURAL_RULES', () => {
+  it('every issue code parseShiftRows can emit — including BAD_ARITY (STRUCTURAL_RULES) and ' +
+     'OVERNIGHT_ROLLOVER, EXPLICIT_NEXT_DAY, DURATION_TOO_LONG (SHIFT_WINDOW_RULES), all pushed ' +
+     'directly by parseShiftRows rather than by any single-cell FieldRule — is covered by the ' +
+     'union of collectLegend(SHIFT_RULES), STRUCTURAL_RULES and SHIFT_WINDOW_RULES', () => {
     const legendCodes = new Set([
       ...collectLegend(SHIFT_RULES).map((d) => d.code),
       ...STRUCTURAL_RULES.map((d) => d.code),
+      ...SHIFT_WINDOW_RULES.map((d) => d.code),
     ])
 
     const emittedCodes = new Set<string>()
@@ -172,6 +222,9 @@ describe('SHIFT_RULES — registry legend (Amendment A)', () => {
       '5203,2026-08-18,08:00,16:00,janitors=1;nurses=1',               // UNKNOWN_REQUIREMENT_KEY
       'abc,2026-08-18,08:00,16:00,nurses=1',                           // INVALID_ID
       '5303,2026-08-18,08:00,16:00',                                   // BAD_ARITY
+      '9005,2026-08-18 ,08:00,16:00,nurses=1;doctors=1;receptionists=1', // DATE_WHITESPACE
+      '9006,2026-08-18, 08:00 ,16:00,nurses=1;doctors=1;receptionists=1', // TIME_WHITESPACE
+      '9008,2026-08-18,08:00,16:00, nurses=1;doctors=1;receptionists=1 ', // REQUIREMENTS_WHITESPACE
     ]
     for (const line of lines) {
       for (const issue of one(line).issues) emittedCodes.add(issue.code)

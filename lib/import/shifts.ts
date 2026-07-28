@@ -55,6 +55,8 @@ export const idRule = createFieldRule<string, number>({
  */
 export const dateRule = createFieldRule<string, string>({
   emits: [
+    { code: 'DATE_WHITESPACE', field: 'date', severity: 'REPAIR',
+      describe: 'Trimmed surrounding whitespace from the date cell.' },
     { code: 'MISSING_DATE', field: 'date', severity: 'FATAL', describe: 'Date is empty.' },
     { code: 'DATE_FORMAT', field: 'date', severity: 'REPAIR',
       describe: 'Converted a dd/mm/yyyy slash date or mm-dd-yyyy dash date into ISO format.' },
@@ -67,6 +69,12 @@ export const dateRule = createFieldRule<string, string>({
   ],
   run(cell, ctx) {
     const trimmed = cell.trim()
+    // Explicit whitespace check, independent of whichever branch runs below:
+    // a cell whose ONLY defect is surrounding whitespace (e.g. an already-ISO
+    // date " 2026-08-18 ") must never vanish from the audit trail just
+    // because the ISO branch never itself calls `repairing`. Mirrors
+    // `staff.ts`'s `NAME_WHITESPACE`. `repairing` no-ops when cell === trimmed.
+    repairing(ctx, 'DATE_WHITESPACE', 'date', 'Trimmed surrounding whitespace from the date.', cell, trimmed)
     if (trimmed === '') return fatal(ctx, 'MISSING_DATE', 'date', 'Date is empty.', cell)
 
     let y: number, m: number, d: number, code: string | null
@@ -114,16 +122,32 @@ export const dateRule = createFieldRule<string, string>({
 
 interface ParsedTime { hh: number; mm: number; plusDay: boolean }
 
-/** One rule per time column so the Import Report legend can show which field a repair/rejection came from. */
+/**
+ * One rule per time column so the per-row `Issue.field` correctly identifies
+ * which column a repair/rejection came from. The static `emits` descriptors
+ * for the two codes shared between the start_time and end_time instances
+ * (`MISSING_TIME`, `BAD_TIME_FORMAT`, and the new `TIME_WHITESPACE`) use the
+ * field-agnostic text `'start_time / end_time'` rather than the per-instance
+ * `field` value: `collectLegend` dedupes by code alone (first entry wins), so
+ * declaring `field` here would make the legend permanently misattribute the
+ * code to whichever rule is declared first, even on rows where the real
+ * defect is in the other column. Per-row issues are unaffected — they always
+ * carry the correct `field` via the `run` closure below.
+ */
 function makeTimeRule(field: 'start_time' | 'end_time') {
   return createFieldRule<string, ParsedTime>({
     emits: [
-      { code: 'MISSING_TIME', field, severity: 'FATAL', describe: 'Time is empty.' },
-      { code: 'BAD_TIME_FORMAT', field, severity: 'FATAL',
+      { code: 'TIME_WHITESPACE', field: 'start_time / end_time', severity: 'REPAIR',
+        describe: 'Trimmed surrounding whitespace from the time cell.' },
+      { code: 'MISSING_TIME', field: 'start_time / end_time', severity: 'FATAL', describe: 'Time is empty.' },
+      { code: 'BAD_TIME_FORMAT', field: 'start_time / end_time', severity: 'FATAL',
         describe: 'Time is not in HH:MM format (optionally with a "+1" next-day suffix), or is outside 00:00-23:59.' },
     ],
     run(cell, ctx) {
       const trimmed = cell.trim()
+      // Explicit whitespace check, independent of the format checks below —
+      // same audit-trail reasoning as dateRule above (Finding 1).
+      repairing(ctx, 'TIME_WHITESPACE', field, 'Trimmed surrounding whitespace from the time.', cell, trimmed)
       if (trimmed === '') return fatal(ctx, 'MISSING_TIME', field, `${field} is empty.`, cell)
 
       const m = TIME.exec(trimmed)
@@ -146,6 +170,8 @@ const REQUIREMENT_PAIR = /^([a-z_]+)=(\d+)$/
 
 export const requirementsRule = createFieldRule<string, Record<Profession, number>>({
   emits: [
+    { code: 'REQUIREMENTS_WHITESPACE', field: 'requirements', severity: 'REPAIR',
+      describe: 'Trimmed surrounding whitespace from the requirements cell.' },
     { code: 'UNPARSEABLE_REQUIREMENTS', field: 'requirements', severity: 'FATAL',
       describe: 'Requirements are empty or not in "role=count;role=count" form; free text is never guessed.' },
     { code: 'UNKNOWN_REQUIREMENT_KEY', field: 'requirements', severity: 'FATAL',
@@ -157,6 +183,11 @@ export const requirementsRule = createFieldRule<string, Record<Profession, numbe
   ],
   run(cell, ctx) {
     const trimmed = cell.trim()
+    // Same gap as dateRule/makeTimeRule (Finding 1): a requirements cell whose
+    // ONLY defect is surrounding whitespace must not vanish from the audit
+    // trail just because every downstream branch operates on `trimmed`.
+    repairing(ctx, 'REQUIREMENTS_WHITESPACE', 'requirements',
+      'Trimmed surrounding whitespace from the requirements.', cell, trimmed)
     const out: Record<Profession, number> = { DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 }
     const seen = new Set<Profession>()
 
@@ -196,8 +227,15 @@ export const requirementsRule = createFieldRule<string, Record<Profession, numbe
   },
 })
 
-/** Amendment A consumer: one rule declaration feeds the pipeline below, and (via
- * collectLegend) the Import Report legend in Task 19. */
+/**
+ * Amendment A consumer: one rule declaration feeds the pipeline below, and
+ * (via collectLegend) the Import Report legend in Task 19. Note that
+ * `collectLegend(SHIFT_RULES)` alone does not cover every code
+ * `parseShiftRows` can emit — `BAD_ARITY` is covered by
+ * `lib/import/registry.ts`'s `STRUCTURAL_RULES`, and `OVERNIGHT_ROLLOVER` /
+ * `EXPLICIT_NEXT_DAY` / `DURATION_TOO_LONG` (pushed directly below, outside
+ * any single-cell rule) are covered by its `SHIFT_WINDOW_RULES`.
+ */
 export const SHIFT_RULES = [idRule, dateRule, startTimeRule, endTimeRule, requirementsRule]
 
 export function parseShiftRows(text: string): ShiftRow[] {
