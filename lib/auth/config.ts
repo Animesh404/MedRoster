@@ -1,12 +1,15 @@
 import Credentials from 'next-auth/providers/credentials'
-import type { NextAuthConfig, Session } from 'next-auth'
-import type { JWT } from 'next-auth/jwt'
+import type { NextAuthConfig } from 'next-auth'
 import bcrypt from 'bcryptjs'
 import { prisma } from '@/lib/db/client'
+import { edgeAuthConfig } from '@/lib/auth/edge-config'
 
+// Full config: Node runtime only (used by `auth.ts` and app/api/auth's route
+// handler). Adds the Credentials provider and its Prisma/bcrypt lookup on top
+// of the edge-safe base — see lib/auth/edge-config.ts for why middleware
+// can't use this directly.
 export const authConfig: NextAuthConfig = {
-  session: { strategy: 'jwt' },
-  pages: { signIn: '/login' },
+  ...edgeAuthConfig,
   providers: [
     Credentials({
       credentials: { email: {}, password: {} },
@@ -29,25 +32,7 @@ export const authConfig: NextAuthConfig = {
       },
     }),
   ],
-  callbacks: {
-    // role and profession ride in the JWT so permission checks need no DB hit (§6.3)
-    jwt({ token, user }) {
-      if (user) {
-        token.uid = Number(user.id)
-        token.role = user.role
-        token.profession = user.profession
-      }
-      return token
-    },
-    // Auth.js's inferred callback params intersect the jwt- and database-strategy
-    // session shapes (the latter carries AdapterUser, whose `id` is a string),
-    // which collapses `session.user.id` to `never`. Annotating the params
-    // explicitly with the jwt-strategy types we actually configured avoids that.
-    session({ session, token }: { session: Session; token: JWT }) {
-      session.user.id = token.uid as number
-      session.user.role = token.role as never
-      session.user.profession = token.profession as never
-      return session
-    },
-  },
+  // jwt/session callbacks (role/profession ride in the JWT, §6.3) are inherited
+  // from edgeAuthConfig via the spread above — kept in one place so the shape
+  // middleware verifies is exactly the shape sign-in produces.
 }
