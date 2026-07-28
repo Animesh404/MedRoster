@@ -107,14 +107,19 @@ export function createRuleContext(): RuleContext & { issues: Issue[] } {
 
 /**
  * Descriptors for issue codes that a pipeline emits directly via
- * `ctx.push(...)` outside of any `FieldRule` — codes that fire before a
- * single cell can be coerced, so they have no natural `In`/`Out` to run a
- * field rule over. `BAD_ARITY` (wrong column count) is the first of these;
- * both `lib/import/staff.ts` and the future `lib/import/shifts.ts` emit it
- * the same way. Without an entry here, `BAD_ARITY` would reach a manager's
- * Import Report with no explanation, since `collectLegend` only sees
- * `FieldRule.emits`. Concatenate this into `IMPORT_LEGEND` alongside
- * `collectLegend([...STAFF_RULES, ...SHIFT_RULES])` and `RECONCILE_RULES`.
+ * `ctx.push(...)` (or `fatal`/`repairing`) outside of any single `FieldRule`
+ * — codes that either fire before a single cell can be coerced, or depend on
+ * combining several already-coerced fields, so they have no natural
+ * `In`/`Out` to run one field rule over. `BAD_ARITY` (wrong column count) is
+ * the first of these; both `lib/import/staff.ts` and `lib/import/shifts.ts`
+ * emit it the same way. `lib/import/shifts.ts` additionally emits
+ * `OVERNIGHT_ROLLOVER`, `EXPLICIT_NEXT_DAY` and `DURATION_TOO_LONG` this way:
+ * all three depend on the combination of the date, start time and end time
+ * (via `resolveShiftWindow`), not on any one cell in isolation. Without an
+ * entry here, these codes would reach a manager's Import Report with no
+ * explanation, since `collectLegend` only sees `FieldRule.emits`. Concatenate
+ * this into `IMPORT_LEGEND` alongside `collectLegend([...STAFF_RULES,
+ * ...SHIFT_RULES])` and `RECONCILE_RULES`.
  */
 export const STRUCTURAL_RULES: RuleDescriptor[] = [
   {
@@ -122,6 +127,24 @@ export const STRUCTURAL_RULES: RuleDescriptor[] = [
     field: 'row',
     severity: 'FATAL',
     describe: 'Row does not have the expected number of columns and cannot be parsed.',
+  },
+  {
+    code: 'OVERNIGHT_ROLLOVER',
+    field: 'end_time',
+    severity: 'REPAIR',
+    describe: 'End time is at or before the start time, so the shift was treated as running into the next day.',
+  },
+  {
+    code: 'EXPLICIT_NEXT_DAY',
+    field: 'end_time',
+    severity: 'REPAIR',
+    describe: 'End time carried an explicit "+1" suffix, so it was moved to the next day.',
+  },
+  {
+    code: 'DURATION_TOO_LONG',
+    field: 'end_time',
+    severity: 'FATAL',
+    describe: 'Shift duration is zero, negative, or exceeds the 12-hour maximum.',
   },
 ]
 
