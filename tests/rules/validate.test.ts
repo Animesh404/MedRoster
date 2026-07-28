@@ -42,6 +42,22 @@ describe('validateAssignment', () => {
       ctx({ claimsByProfession: { NURSE: 2, DOCTOR: 0, RECEPTIONIST: 0 } }), NOW)
     expect(err!.code).toBe('ROLE_FULL')
     expect(err!.message).toContain('2 of 2')
+    expect(err!.message).toBe('This shift already has 2 of 2 nurses.')
+  })
+
+  it('singularises the ROLE_FULL message when only one of the role is required', () => {
+    const err = validateAssignment(
+      shift({ requirements: [
+        { profession: 'NURSE', requiredCount: 1 },
+        { profession: 'DOCTOR', requiredCount: 0 },
+        { profession: 'RECEPTIONIST', requiredCount: 0 },
+      ] }),
+      nurse,
+      ctx({ claimsByProfession: { NURSE: 1, DOCTOR: 0, RECEPTIONIST: 0 } }),
+      NOW,
+    )
+    expect(err!.code).toBe('ROLE_FULL')
+    expect(err!.message).toBe('This shift already has 1 of 1 nurse.')
   })
 
   it('allows a doctor onto a shift whose nurse slots are full', () => {
@@ -49,19 +65,22 @@ describe('validateAssignment', () => {
       ctx({ claimsByProfession: { NURSE: 2, DOCTOR: 0, RECEPTIONIST: 0 } }), NOW)).toBeNull()
   })
 
-  it('rejects a shift overlapping one the user already holds', () => {
+  it('rejects a shift overlapping one the user already holds, naming the conflicting shift', () => {
     const err = validateAssignment(shift(), nurse, ctx({
       userOtherShifts: [{
+        id: 42,
         startsAt: new Date('2026-08-12T13:00:00Z'),
         endsAt: new Date('2026-08-12T21:00:00Z'),
       }],
     }), NOW)
     expect(err!.code).toBe('OVERLAP')
+    expect(err!.meta?.conflictShiftId).toBe(42)
   })
 
   it('allows a back-to-back shift that only touches at the boundary', () => {
     expect(validateAssignment(shift(), nurse, ctx({
       userOtherShifts: [{
+        id: 43,
         startsAt: new Date('2026-08-12T15:00:00Z'),
         endsAt: new Date('2026-08-12T23:00:00Z'),
       }],
@@ -71,5 +90,6 @@ describe('validateAssignment', () => {
   it('rejects a manager with no profession — managers claim as themselves, not as staff', () => {
     const err = validateAssignment(shift(), { id: 1, profession: null }, ctx(), NOW)
     expect(err!.code).toBe('PROFESSION_NOT_REQUIRED')
+    expect(err!.message).toBe('Managers do not hold clinical shifts.')
   })
 })
