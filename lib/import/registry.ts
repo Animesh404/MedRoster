@@ -49,8 +49,12 @@ export function createFieldRule<In, Out>(spec: FieldRule<In, Out>): FieldRule<In
  * rules with a different `describe` or `severity` — two rules silently
  * disagreeing about what a code means is exactly the drift this exists to
  * prevent.
+ *
+ * Takes a minimal structural type rather than `FieldRule<never, unknown>[]`:
+ * this function only ever reads `rule.emits` and never touches `run`, so
+ * there is no need for the `In`/`Out` generic-variance workaround at all.
  */
-export function collectLegend(rules: FieldRule<never, unknown>[]): RuleDescriptor[] {
+export function collectLegend(rules: { emits: RuleDescriptor[] }[]): RuleDescriptor[] {
   const byCode = new Map<string, RuleDescriptor>()
 
   for (const rule of rules) {
@@ -100,5 +104,25 @@ export function createRuleContext(): RuleContext & { issues: Issue[] } {
   const issues: Issue[] = []
   return { issues, push: (i) => { issues.push(i) } }
 }
+
+/**
+ * Descriptors for issue codes that a pipeline emits directly via
+ * `ctx.push(...)` outside of any `FieldRule` — codes that fire before a
+ * single cell can be coerced, so they have no natural `In`/`Out` to run a
+ * field rule over. `BAD_ARITY` (wrong column count) is the first of these;
+ * both `lib/import/staff.ts` and the future `lib/import/shifts.ts` emit it
+ * the same way. Without an entry here, `BAD_ARITY` would reach a manager's
+ * Import Report with no explanation, since `collectLegend` only sees
+ * `FieldRule.emits`. Concatenate this into `IMPORT_LEGEND` alongside
+ * `collectLegend([...STAFF_RULES, ...SHIFT_RULES])` and `RECONCILE_RULES`.
+ */
+export const STRUCTURAL_RULES: RuleDescriptor[] = [
+  {
+    code: 'BAD_ARITY',
+    field: 'row',
+    severity: 'FATAL',
+    describe: 'Row does not have the expected number of columns and cannot be parsed.',
+  },
+]
 
 export type { Severity }

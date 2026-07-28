@@ -63,10 +63,14 @@ export const professionRule = createFieldRule<string, Profession>({
       return fatal(ctx, 'UNKNOWN_PROFESSION', 'role',
         `"${cell.trim()}" is not a profession this clinic schedules.`, cell)
     }
-    // Compare against the human-readable label ("Doctor"), not the raw Prisma
-    // enum ("DOCTOR") — otherwise every already-correct role would be flagged
-    // as a repair purely because the enum constant is upper-cased.
-    repairing(ctx, 'ROLE_ALIAS', 'role', 'Normalised the role spelling.', cell.trim(), PROFESSION_LABELS[parsed])
+    // Compare against the raw, untrimmed cell — not cell.trim() — so that a
+    // whitespace-only defect (e.g. " Nurse ") still produces a ROLE_ALIAS
+    // repair instead of silently no-opping just because the trimmed value
+    // happens to already be canonical. Compare against the human-readable
+    // label ("Doctor"), not the raw Prisma enum ("DOCTOR") — otherwise every
+    // already-correct role would be flagged as a repair purely because the
+    // enum constant is upper-cased.
+    repairing(ctx, 'ROLE_ALIAS', 'role', 'Normalised the role spelling.', cell, PROFESSION_LABELS[parsed])
     return parsed
   },
 })
