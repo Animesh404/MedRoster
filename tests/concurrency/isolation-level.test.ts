@@ -86,14 +86,20 @@ describe('isolation level is load-bearing, not incidental', () => {
   it('asserts the production call sites actually pin ReadCommitted, so this cannot silently regress', () => {
     // Belt-and-braces alongside the live reproduction above: a fast, fully
     // deterministic guard (no timing dependency) that fails immediately if a
-    // future edit changes or drops the isolation level at either $transaction
-    // call site in assign.ts.
+    // future edit changes or drops the isolation level at any $transaction
+    // call site in assign.ts OR edit.ts — both share the same `withOrderedLocks`
+    // correctness argument (MINOR-6).
     expect(TX_OPTIONS).toEqual({ isolationLevel: 'ReadCommitted' })
 
-    const source = readFileSync(new URL('../../lib/rules/assign.ts', import.meta.url), 'utf8')
-    const transactionCallSites = source.match(/\$transaction\(/g) ?? []
-    const pinnedCallSites = source.match(/TX_OPTIONS,/g) ?? []
-    expect(transactionCallSites.length).toBeGreaterThanOrEqual(2)
-    expect(pinnedCallSites.length).toBe(transactionCallSites.length)
+    for (const file of ['assign.ts', 'edit.ts']) {
+      const source = readFileSync(new URL(`../../lib/rules/${file}`, import.meta.url), 'utf8')
+      const transactionCallSites = source.match(/\$transaction\(/g) ?? []
+      // TX_OPTIONS is passed as the second argument to `$transaction`, immediately
+      // followed by either a comma (more args/formatting on the next line) or the
+      // call's closing paren — matching both files' formatting styles.
+      const pinnedCallSites = source.match(/TX_OPTIONS[,)]/g) ?? []
+      expect(transactionCallSites.length).toBeGreaterThanOrEqual(1)
+      expect(pinnedCallSites.length).toBe(transactionCallSites.length)
+    }
   })
 })
