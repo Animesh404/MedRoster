@@ -34,9 +34,19 @@ function isRealDate(y: number, m: number, d: number): boolean {
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
+/**
+ * `field`/`describe` are deliberately field-agnostic ('staff_id / shift_id',
+ * 'Id is not a whole number.') rather than shift-specific — same reasoning
+ * as `makeTimeRule` below for `TIME_WHITESPACE`/`MISSING_TIME`/
+ * `BAD_TIME_FORMAT`. `staff.ts`'s own `idRule` emits the SAME `INVALID_ID`
+ * code; `collectLegend`/`mergeLegends` throw on a code registered twice
+ * with conflicting text (Finding 1), so both pipelines must agree here even
+ * though each pipeline's per-row `Issue.message`/`field` below stays
+ * specific ("Shift id is not a whole number.", field: 'shift_id').
+ */
 export const idRule = createFieldRule<string, number>({
   emits: [
-    { code: 'INVALID_ID', field: 'shift_id', severity: 'FATAL', describe: 'Shift id is not a whole number.' },
+    { code: 'INVALID_ID', field: 'staff_id / shift_id', severity: 'FATAL', describe: 'Id is not a whole number.' },
   ],
   run(cell, ctx) {
     const trimmed = cell.trim()
