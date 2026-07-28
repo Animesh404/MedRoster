@@ -42,7 +42,7 @@ model User {
   role          Role
   profession    Profession?
   externalId    Int?        @unique
-  createdAt     DateTime    @default(now())
+  createdAt     DateTime    @default(now()) @db.Timestamptz(3)
 
   claims        Claim[]     @relation("ClaimHolder")
   assignedBy    Claim[]     @relation("ClaimAssigner")
@@ -57,8 +57,8 @@ model Shift {
   seriesId            Int?
   detachedFromSeries  Boolean  @default(false)
   externalId          Int?     @unique
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt           DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime @updatedAt @db.Timestamptz(3)
 
   series        ShiftSeries?       @relation(fields: [seriesId], references: [id], onDelete: SetNull)
   requirements  ShiftRequirement[]
@@ -84,7 +84,7 @@ model Claim {
   shiftId      Int
   userId       Int
   assignedById Int?
-  createdAt    DateTime @default(now())
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
 
   shift      Shift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
   user       User  @relation("ClaimHolder",  fields: [userId],       references: [id], onDelete: Cascade)
@@ -101,7 +101,7 @@ model ShiftSeries {
   endTime      String                      // "16:00" clinic-local
   untilDate    DateTime @db.Date
   requirements Json                        // { DOCTOR: 1, NURSE: 2, RECEPTIONIST: 0 }
-  createdAt    DateTime @default(now())
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
 
   shifts Shift[]
 }
@@ -113,7 +113,7 @@ model ImportRun {
   filename  String
   actorId   Int?
   stats     Json
-  createdAt DateTime     @default(now())
+  createdAt DateTime     @default(now()) @db.Timestamptz(3)
 
   actor User?             @relation(fields: [actorId], references: [id], onDelete: SetNull)
   rows  ImportRowResult[]
@@ -141,7 +141,7 @@ model EventOutbox {
   type       String
   payload    Json
   mutationId String?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
 
   @@index([topic, id])
 }
