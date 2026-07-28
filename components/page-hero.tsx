@@ -36,7 +36,25 @@ export function PageHero({
         <h1 className="font-display text-3xl font-semibold tracking-tight text-balance sm:text-4xl">{title}</h1>
         {children}
       </div>
-      {gauge ? <RadialGauge value={gauge.value} label={gauge.label} className="shrink-0 text-white" /> : null}
+      {gauge ? (
+        <>
+          {/*
+           * Two sizes, toggled purely by CSS display (§responsiveness: "the
+           * gauge shrinks" below 768px) rather than one instance resized via
+           * inline style — RadialGauge's stroke width and centred percentage
+           * are computed from its numeric `size` prop, so a single instance
+           * can't be responsively resized by a parent media query alone.
+           * `display: none` removes the hidden one from the accessibility
+           * tree, so this never doubles up for assistive tech.
+           */}
+          <div className="shrink-0 md:hidden">
+            <RadialGauge value={gauge.value} label={gauge.label} size={64} className="text-white" />
+          </div>
+          <div className="hidden shrink-0 md:block">
+            <RadialGauge value={gauge.value} label={gauge.label} size={96} className="text-white" />
+          </div>
+        </>
+      ) : null}
     </div>
   )
 }
