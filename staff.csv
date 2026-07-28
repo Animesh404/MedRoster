@@ -1,0 +1,42 @@
+staff_id,full_name,role,email
+121,Marcus Whitfield,Doctor,marcus.whitfield@clinicmail.test
+131,Anya Haddad,NURSE,anya.haddad@clinicmail.test
+104,Rosa Weber,RN,rosa.weber@clinicmail.test
+999,Zainab Volkov,NURSE,zainab.volkov@clinicmail.test
+120,Ben Marchand,receptionist,ben.marchand@clinicmail.test
+129,Dev Bell,Doctor,dev.bell@clinicmail.test
+113,Tara Rahman,Registered Nurse,tara.rahman@clinicmail.test
+102,Hiro Petrova,recep.,hiro.petrova@clinicmail.test
+108,Aisha Weber,Nurse,aisha.weber@clinicmail.test
+127,Hiro Nolan,Physician,hiro.nolan@clinicmail.test
+122,Priya Weber,Doctor,priya.weber(at)clinicmail.test
+133,  Karan ALI,Reception,karan.ali@clinicmail.test
+126,Priya Mehta,Reception,priya.mehta@clinicmail.test
+118,Omar Patel,MD,omar.patel@clinicmail.test
+114,Lucia Volkov,DOCTOR ,lucia.volkov@clinicmail.test
+128,Priya Patel,Nurse,priya.patel@clinicmail.test
+101,Ben Ali, Nurse ,ben.ali@clinicmail.test
+107,Hiro Iyer,Receptionist,hiro.iyer@clinicmail.test
+103,Marcus Kapoor,receptionist,marcus.kapoor@clinicmail.test
+997,Casey Morgan,Janitor,casey.morgan@clinicmail.test
+103,Marcus Kapoor,receptionist,marcus.kapoor@clinicmail.test
+125,Zainab Okafor,Reception,zainab.okafor@clinicmail.test
+115,Fatima Petrova,RN,fatima.petrova(at)clinicmail.test
+110,Felix Volkov,nurse,felix.volkov@clinicmail.test
+110,Felix Volkov,nurse,felix.volkov@clinicmail.test
+100,Ivy Bell,NURSE,ivy.bell@clinicmail.test
+995,Robin Vale,Nurse,
+130,Fatima Marchand,recep.,fatima.marchand@clinicmail.test
+117,Priya Lind,RN,priya.lind@clinicmail.test
+105,Zainab Volkov,NURSE,zainab.volkov@clinicmail.test
+124,Rosa Patel,MD,rosa.patel@clinicmail.test
+123,Anya Nakamura,receptionist,anya.nakamura@clinicmail.test
+109,Lucia Nakamura,Reception,lucia.nakamura@clinicmail.test
+112,Yusuf Patel,RN,yusuf.patel@clinicmail.test
+998,J. Placeholder,Nurse,hiro.iyer@clinicmail.test
+119,Noah Ali,Registered Nurse,noah.ali@clinicmail.test
+106,Aisha Sharma,nurse,aisha.sharma@clinicmail.test
+996,,Doctor,noname@clinicmail.test
+111,Chloe Hussain,Physician,chloe.hussain@clinicmail.test
+132,Omar Haddad,RN,omar.haddad@clinicmail.test
+116,Tara Rossi,NURSE,tara.rossi@clinicmail.test
