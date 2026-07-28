@@ -1,0 +1,147 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  MANAGER
+  STAFF
+}
+
+enum Profession {
+  DOCTOR
+  NURSE
+  RECEPTIONIST
+}
+
+enum ImportSource {
+  SEED
+  UPLOAD
+}
+
+enum FileKind {
+  STAFF
+  SHIFT
+}
+
+enum RowOutcome {
+  ACCEPTED
+  REPAIRED
+  MERGED
+  REJECTED
+}
+
+model User {
+  id            Int         @id @default(autoincrement())
+  email         String      @unique
+  name          String
+  passwordHash  String
+  role          Role
+  profession    Profession?
+  externalId    Int?        @unique
+  createdAt     DateTime    @default(now())
+
+  claims        Claim[]     @relation("ClaimHolder")
+  assignedBy    Claim[]     @relation("ClaimAssigner")
+  importRuns    ImportRun[]
+}
+
+model Shift {
+  id                  Int      @id @default(autoincrement())
+  startsAt            DateTime @db.Timestamptz(3)
+  endsAt              DateTime @db.Timestamptz(3)
+  version             Int      @default(0)
+  seriesId            Int?
+  detachedFromSeries  Boolean  @default(false)
+  externalId          Int?     @unique
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  series        ShiftSeries?       @relation(fields: [seriesId], references: [id], onDelete: SetNull)
+  requirements  ShiftRequirement[]
+  claims        Claim[]
+
+  @@index([startsAt, endsAt])
+  @@index([seriesId])
+}
+
+model ShiftRequirement {
+  id            Int        @id @default(autoincrement())
+  shiftId       Int
+  profession    Profession
+  requiredCount Int
+
+  shift Shift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+
+  @@unique([shiftId, profession])
+}
+
+model Claim {
+  id           Int      @id @default(autoincrement())
+  shiftId      Int
+  userId       Int
+  assignedById Int?
+  createdAt    DateTime @default(now())
+
+  shift      Shift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  user       User  @relation("ClaimHolder",  fields: [userId],       references: [id], onDelete: Cascade)
+  assignedBy User? @relation("ClaimAssigner", fields: [assignedById], references: [id], onDelete: SetNull)
+
+  @@unique([shiftId, userId])
+  @@index([userId])
+}
+
+model ShiftSeries {
+  id           Int      @id @default(autoincrement())
+  weekdays     Int[]                       // 0=Sun … 6=Sat
+  startTime    String                      // "08:00" clinic-local
+  endTime      String                      // "16:00" clinic-local
+  untilDate    DateTime @db.Date
+  requirements Json                        // { DOCTOR: 1, NURSE: 2, RECEPTIONIST: 0 }
+  createdAt    DateTime @default(now())
+
+  shifts Shift[]
+}
+
+model ImportRun {
+  id        Int          @id @default(autoincrement())
+  source    ImportSource
+  fileKind  FileKind
+  filename  String
+  actorId   Int?
+  stats     Json
+  createdAt DateTime     @default(now())
+
+  actor User?             @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  rows  ImportRowResult[]
+
+  @@index([createdAt])
+}
+
+model ImportRowResult {
+  id          Int        @id @default(autoincrement())
+  importRunId Int
+  rowNumber   Int
+  rawRow      String
+  outcome     RowOutcome
+  issues      Json
+  entityId    Int?
+
+  run ImportRun @relation(fields: [importRunId], references: [id], onDelete: Cascade)
+
+  @@index([importRunId, rowNumber])
+}
+
+model EventOutbox {
+  id         BigInt   @id @default(autoincrement())
+  topic      String
+  type       String
+  payload    Json
+  mutationId String?
+  createdAt  DateTime @default(now())
+
+  @@index([topic, id])
+}
