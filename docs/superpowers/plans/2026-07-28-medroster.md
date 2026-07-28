@@ -5116,4 +5116,1492 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-<!-- PLAN-CONTINUES -->
+### Task 15: Seed — import plus deterministic claim seeding
+
+**Files:**
+- Create: `prisma/seed.ts`, `lib/seed/claim-seeder.ts`
+- Test: `tests/seed/seed.test.ts`
+
+**Interfaces:**
+- Consumes: `runStaffImport`/`runShiftImport`/`apply*` (Tasks 7–8), `assignClaim` (Task 10).
+- Produces:
+  - `seedClaims(db, opts): Promise<{ attempted: number; created: number }>`
+  - `createRng(seed: number): () => number` — deterministic, no `Math.random`
+  - `npm run db:seed`
+
+- [ ] **Step 1: Write the seed test**
+
+Create `tests/seed/seed.test.ts`:
+
+```ts
+import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { runShiftImport, runStaffImport } from '@/lib/import'
+import { applyShiftImport, applyStaffImport } from '@/lib/import/apply'
+import { createRng, seedClaims } from '@/lib/seed/claim-seeder'
+import { computeCoverage } from '@/lib/coverage'
+import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
+
+const META = { source: 'SEED' as const, filename: 'x.csv', passwordHash: 'x' }
+const NOW = new Date('2026-07-28T00:00:00Z')
+
+async function importFixtures() {
+  const db = await getTestDb()
+  await db.$transaction((tx) =>
+    applyStaffImport(tx, runStaffImport(readFileSync('staff.csv', 'utf8')), META), { timeout: 60_000 })
+  await db.$transaction((tx) =>
+    applyShiftImport(tx, runShiftImport(readFileSync('shifts.csv', 'utf8')),
+      { ...META, filename: 'shifts.csv' }), { timeout: 60_000 })
+  return db
+}
+
+beforeEach(resetTestDb)
+afterAll(stopTestDb)
+
+describe('createRng', () => {
+  it('produces the same sequence for the same seed', () => {
+    const a = createRng(42), b = createRng(42)
+    expect([a(), a(), a()]).toEqual([b(), b(), b()])
+  })
+
+  it('produces a different sequence for a different seed', () => {
+    expect(createRng(1)()).not.toBe(createRng(2)())
+  })
+
+  it('stays within [0, 1)', () => {
+    const r = createRng(7)
+    for (let i = 0; i < 200; i++) {
+      const v = r()
+      expect(v).toBeGreaterThanOrEqual(0)
+      expect(v).toBeLessThan(1)
+    }
+  })
+})
+
+describe('seedClaims', () => {
+  it('creates claims that all satisfy the business rules', async () => {
+    const db = await importFixtures()
+    await seedClaims(db, { seed: 1337, fillRatio: 0.55, now: NOW })
+
+    // No user may hold two overlapping shifts.
+    const claims = await db.claim.findMany({ include: { shift: true } })
+    const byUser = new Map<number, { startsAt: Date; endsAt: Date }[]>()
+    for (const c of claims) {
+      const list = byUser.get(c.userId) ?? []
+      list.push(c.shift)
+      byUser.set(c.userId, list)
+    }
+    for (const [, shifts] of byUser) {
+      shifts.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
+      for (let i = 1; i < shifts.length; i++) {
+        expect(shifts[i]!.startsAt.getTime()).toBeGreaterThanOrEqual(shifts[i - 1]!.endsAt.getTime())
+      }
+    }
+  })
+
+  it('never exceeds a shift\'s requirement for any profession', async () => {
+    const db = await importFixtures()
+    await seedClaims(db, { seed: 1337, fillRatio: 0.55, now: NOW })
+
+    const shifts = await db.shift.findMany({
+      include: { requirements: true, claims: { include: { user: true } } },
+    })
+    for (const shift of shifts) {
+      for (const req of shift.requirements) {
+        const held = shift.claims.filter((c) => c.user.profession === req.profession).length
+        expect(held, `shift ${shift.id} ${req.profession}`).toBeLessThanOrEqual(req.requiredCount)
+      }
+    }
+  })
+
+  it('is deterministic — the same seed yields the same claim set', async () => {
+    const db = await importFixtures()
+    await seedClaims(db, { seed: 1337, fillRatio: 0.55, now: NOW })
+    const first = (await db.claim.findMany({ orderBy: [{ shiftId: 'asc' }, { userId: 'asc' }] }))
+      .map((c) => `${c.shiftId}:${c.userId}`)
+
+    await db.claim.deleteMany({})
+    await seedClaims(db, { seed: 1337, fillRatio: 0.55, now: NOW })
+    const second = (await db.claim.findMany({ orderBy: [{ shiftId: 'asc' }, { userId: 'asc' }] }))
+      .map((c) => `${c.shiftId}:${c.userId}`)
+
+    expect(second).toEqual(first)
+  })
+
+  it('produces all three coverage states so the dashboard demonstrates each', async () => {
+    const db = await importFixtures()
+    await seedClaims(db, { seed: 1337, fillRatio: 0.55, now: NOW })
+
+    const shifts = await db.shift.findMany({
+      include: { requirements: true, claims: { include: { user: true } } },
+    })
+    const statuses = new Set(shifts.map((shift) => {
+      const req = { DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 }
+      for (const r of shift.requirements) req[r.profession] = r.requiredCount
+      const have = { DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 }
+      for (const c of shift.claims) if (c.user.profession) have[c.user.profession] += 1
+      return computeCoverage(req, have).status
+    }))
+
+    expect(statuses).toContain('FULL')
+    expect(statuses).toContain('PARTIAL')
+    expect(statuses).toContain('EMPTY')
+  })
+})
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npm test -- tests/seed/seed.test.ts`
+Expected: FAIL — `@/lib/seed/claim-seeder` not found.
+
+- [ ] **Step 3: Implement the claim seeder**
+
+Create `lib/seed/claim-seeder.ts`:
+
+```ts
+import type { PrismaClient } from '@prisma/client'
+import { assignClaim } from '@/lib/rules/assign'
+
+/** Mulberry32 — small, fast, fully deterministic. No Math.random anywhere in the seed. */
+export function createRng(seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0
+    let t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+function shuffle<T>(items: T[], rng: () => number): T[] {
+  const out = [...items]
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1))
+    ;[out[i], out[j]] = [out[j]!, out[i]!]
+  }
+  return out
+}
+
+export interface SeedClaimsOptions {
+  seed: number
+  /** Roughly what fraction of open slots to attempt to fill. */
+  fillRatio: number
+  now?: Date
+}
+
+/**
+ * Populates the roster with claims so the coverage dashboard shows all three
+ * states rather than a wall of empty shifts (§7.2).
+ *
+ * Every claim goes through assignClaim — the same validator and the same locks
+ * a real staff member hits. Nothing is written directly, so this doubles as an
+ * end-to-end exercise of the rules engine and cannot produce a roster the
+ * application itself would consider invalid.
+ */
+export async function seedClaims(
+  db: PrismaClient,
+  opts: SeedClaimsOptions,
+): Promise<{ attempted: number; created: number }> {
+  const rng = createRng(opts.seed)
+  const now = opts.now ?? new Date()
+
+  const shifts = await db.shift.findMany({
+    where: { startsAt: { gt: now } },
+    orderBy: { startsAt: 'asc' },
+    include: { requirements: true },
+  })
+
+  const staff = await db.user.findMany({
+    where: { role: 'STAFF' },
+    orderBy: { id: 'asc' },
+    select: { id: true, profession: true },
+  })
+
+  const byProfession = new Map<string, number[]>()
+  for (const person of staff) {
+    if (!person.profession) continue
+    const list = byProfession.get(person.profession) ?? []
+    list.push(person.id)
+    byProfession.set(person.profession, list)
+  }
+
+  let attempted = 0
+  let created = 0
+
+  // Shuffled shift order means the filled shifts are scattered across the month
+  // rather than front-loaded, so any week the reviewer lands on shows a mix.
+  for (const shift of shuffle(shifts, rng)) {
+    for (const requirement of shift.requirements) {
+      if (requirement.requiredCount === 0) continue
+
+      const pool = byProfession.get(requirement.profession) ?? []
+      if (pool.length === 0) continue
+
+      // Vary how full each shift gets: some reach FULL, most land PARTIAL,
+      // and the shifts skipped entirely stay EMPTY.
+      const target = Math.round(requirement.requiredCount * (opts.fillRatio + rng() * 0.6))
+      const wanted = Math.min(requirement.requiredCount, Math.max(0, target))
+
+      for (const userId of shuffle(pool, rng).slice(0, wanted)) {
+        attempted += 1
+        // Rejections are expected and fine — the roster is deliberately
+        // over-subscribed, so many candidates already hold an overlapping shift.
+        const result = await assignClaim({ db, shiftId: shift.id, userId, actorId: userId, now })
+        if ('claimId' in result) created += 1
+      }
+    }
+  }
+
+  return { attempted, created }
+}
+```
+
+- [ ] **Step 4: Run it to verify it passes**
+
+Run: `npm test -- tests/seed/seed.test.ts`
+Expected: PASS, 7 tests.
+
+If the "all three coverage states" test fails, tune `fillRatio` — not the test. At
+`0.55` some shifts should reach FULL while the deliberate 388-slots-vs-34-staff
+shortage (§2.3) guarantees plenty of PARTIAL and EMPTY.
+
+- [ ] **Step 5: Implement `prisma/seed.ts`**
+
+Create `prisma/seed.ts`:
+
+```ts
+import { readFileSync } from 'node:fs'
+import bcrypt from 'bcryptjs'
+import { PrismaClient } from '@prisma/client'
+import { runShiftImport, runStaffImport } from '@/lib/import'
+import { applyShiftImport, applyStaffImport } from '@/lib/import/apply'
+import { seedClaims } from '@/lib/seed/claim-seeder'
+
+const prisma = new PrismaClient()
+
+const SEED_PASSWORD = process.env.SEED_PASSWORD ?? 'medroster123'
+
+async function main(): Promise<void> {
+  const passwordHash = await bcrypt.hash(SEED_PASSWORD, 10)
+
+  // Idempotent: upserts keyed on the CSV ids mean re-running never duplicates.
+  await prisma.user.upsert({
+    where: { email: 'manager@clinicmail.test' },
+    create: {
+      email: 'manager@clinicmail.test', name: 'Dana Okonkwo',
+      passwordHash, role: 'MANAGER',
+    },
+    update: { passwordHash },
+  })
+
+  const staffResult = runStaffImport(readFileSync('staff.csv', 'utf8'))
+  await prisma.$transaction((tx) =>
+    applyStaffImport(tx, staffResult, {
+      source: 'SEED', filename: 'staff.csv', passwordHash,
+    }), { timeout: 60_000 })
+
+  const shiftResult = runShiftImport(readFileSync('shifts.csv', 'utf8'))
+  await prisma.$transaction((tx) =>
+    applyShiftImport(tx, shiftResult, {
+      source: 'SEED', filename: 'shifts.csv', passwordHash,
+    }), { timeout: 120_000 })
+
+  console.log('staff  ', staffResult.stats)
+  console.log('shifts ', shiftResult.stats)
+
+  const existingClaims = await prisma.claim.count()
+  if (existingClaims === 0) {
+    const { attempted, created } = await seedClaims(prisma, { seed: 1337, fillRatio: 0.55 })
+    console.log(`claims  attempted ${attempted}, created ${created}`)
+  } else {
+    console.log(`claims  ${existingClaims} already present, skipping claim seeding`)
+  }
+}
+
+main()
+  .then(() => prisma.$disconnect())
+  .catch(async (err) => {
+    console.error(err)
+    await prisma.$disconnect()
+    process.exit(1)
+  })
+```
+
+Add `tsx` and wire the Prisma seed hook in `package.json`:
+
+```bash
+npm i -D tsx
+```
+
+```json
+{ "prisma": { "seed": "tsx prisma/seed.ts" } }
+```
+
+- [ ] **Step 6: Run the seed against the local database**
+
+```bash
+docker compose up -d db
+npx dotenv -e .env -- npx prisma migrate deploy
+npx dotenv -e .env -- npx tsx prisma/seed.ts
+```
+
+Expected output:
+
+```
+staff   { accepted: 34, merged: 3, rejected: 4, total: 41 }
+shifts  { accepted: 109, merged: 2, rejected: 6, total: 117 }
+claims  attempted NNN, created NNN
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add prisma/seed.ts lib/seed tests/seed package.json
+git commit -m "feat: seed the roster via the importer and a deterministic claim pass
+
+Seeded claims go through assignClaim, so the seed exercises the real validator
+and cannot produce a roster the app would consider invalid. A fixed RNG makes
+the result reproducible across deploys.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 16: Design system — Pencil mockups and tokens
+
+**Files:**
+- Create: `design/medroster.pen`, `app/globals.css` (modify), `tailwind.config.ts` (modify), `lib/ui/tokens.ts`
+- Test: `tests/ui/tokens.test.ts`
+
+**Interfaces:**
+- Consumes: the palette in §8.1.
+- Produces: CSS custom properties, Tailwind theme extension, and `STATUS_STYLES: Record<CoverageStatus, { label: string; dot: string; chip: string }>` used by every status display.
+
+> This task is design-first. Produce the mockups **before** writing any component
+> code, so the UI tasks implement a decided design rather than inventing one.
+
+- [ ] **Step 1: Load the Pencil schema and guidelines**
+
+Call `mcp__pencil__get_editor_state` with `include_schema: true`, then
+`mcp__pencil__get_guidelines`. Do not call any other Pencil tool before this —
+the schema is required to construct valid nodes.
+
+- [ ] **Step 2: Create the design file and define variables**
+
+Create `design/medroster.pen` via `mcp__pencil__batch_design`. Define these
+variables first so every frame references tokens rather than literals:
+
+```
+brand/primary      #0D9488
+brand/mid          #5EEAD4
+brand/deep         #0F766E
+surface/tint       #ECFDF8
+surface/base       #FFFFFF
+surface/raised     #F8FAFC
+ink/strong         #0F172A
+ink/muted          #64748B
+status/full        #059669
+status/partial     #D97706
+status/empty       #E11D48
+radius/card        16
+radius/pill        999
+```
+
+Status colours deliberately sit outside the brand family (§8.1) so "partially
+staffed" amber never reads as brand chrome.
+
+- [ ] **Step 3: Design the five frames**
+
+Produce these frames at 1440×N desktop, plus 390×N mobile variants for the two
+marked responsive:
+
+1. **Landing** — gradient hero (brand/mid → brand/primary → brand/deep), headline
+   "Shifts That Staff Themselves", subhead, primary CTA, and a floating dashboard
+   card overlapping the hero's lower edge showing a miniature week grid. Below:
+   three feature cards, then an FAQ accordion.
+2. **Dashboard week grid** *(responsive)* — 7 day columns, shift cards stacked
+   within each. Each card: time range, a status dot, and the missing-roles chip
+   row ("needs 2 nurses, 1 doctor"). Header carries prev/next week, a date
+   picker, and a "Today" button.
+3. **Shift detail** — time, requirements as filled/total per profession, the
+   claimant list, a claim button, and the manager's edit/delete actions.
+4. **Edit drop-preview dialog** — the proposed change summarised, then an
+   explicit list of who will be dropped and why, with confirm/cancel.
+5. **Import report** — the four outcome counts as stat tiles, then a filterable
+   row table: raw row in monospace, outcome chip, and the issue list showing
+   before → after.
+
+- [ ] **Step 4: Screenshot each frame and review**
+
+Call `mcp__pencil__get_screenshot` per frame. Check: does the week grid stay
+legible at 390px? Are the three status states distinguishable without relying on
+colour alone (each has a distinct dot glyph as well as hue)? Is the missing-roles
+text readable at card size?
+
+Present the screenshots to the user before proceeding to Step 5.
+
+- [ ] **Step 5: Write the tokens test**
+
+Create `tests/ui/tokens.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { STATUS_STYLES } from '@/lib/ui/tokens'
+
+describe('STATUS_STYLES', () => {
+  it('covers every coverage status', () => {
+    expect(Object.keys(STATUS_STYLES).sort()).toEqual(['EMPTY', 'FULL', 'PARTIAL'])
+  })
+
+  it('gives each status a distinct label and glyph, so colour is not the only signal', () => {
+    const labels = Object.values(STATUS_STYLES).map((s) => s.label)
+    const glyphs = Object.values(STATUS_STYLES).map((s) => s.glyph)
+    expect(new Set(labels).size).toBe(3)
+    expect(new Set(glyphs).size).toBe(3)
+  })
+})
+```
+
+- [ ] **Step 6: Implement the tokens**
+
+Create `lib/ui/tokens.ts`:
+
+```ts
+import type { CoverageStatus } from '@/lib/coverage'
+
+/**
+ * The single definition of how a staffing status looks and reads. Every badge,
+ * dot and legend pulls from here, so the week grid and the shift detail page
+ * cannot drift apart.
+ *
+ * Each status carries a distinct glyph as well as a distinct hue — status must
+ * survive being read in greyscale or by a colour-blind user.
+ */
+export const STATUS_STYLES: Record<CoverageStatus, {
+  label: string
+  glyph: string
+  dot: string
+  chip: string
+}> = {
+  FULL: {
+    label: 'Fully staffed', glyph: '●',
+    dot: 'bg-emerald-600',
+    chip: 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200 dark:bg-emerald-950 dark:text-emerald-200 dark:ring-emerald-900',
+  },
+  PARTIAL: {
+    label: 'Partially staffed', glyph: '◐',
+    dot: 'bg-amber-500',
+    chip: 'bg-amber-50 text-amber-900 ring-1 ring-amber-200 dark:bg-amber-950 dark:text-amber-100 dark:ring-amber-900',
+  },
+  EMPTY: {
+    label: 'Unstaffed', glyph: '○',
+    dot: 'bg-rose-600',
+    chip: 'bg-rose-50 text-rose-800 ring-1 ring-rose-200 dark:bg-rose-950 dark:text-rose-200 dark:ring-rose-900',
+  },
+}
+```
+
+Add to `app/globals.css`:
+
+```css
+@theme {
+  --color-brand-primary: #0D9488;
+  --color-brand-mid: #5EEAD4;
+  --color-brand-deep: #0F766E;
+  --color-surface-tint: #ECFDF8;
+  --radius-card: 1rem;
+}
+
+.hero-gradient {
+  background: linear-gradient(160deg, var(--color-brand-mid) 0%, var(--color-brand-primary) 45%, var(--color-brand-deep) 100%);
+}
+```
+
+- [ ] **Step 7: Run the test to verify it passes**
+
+Run: `npm test -- tests/ui/tokens.test.ts`
+Expected: PASS, 2 tests.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add design lib/ui app/globals.css tailwind.config.ts tests/ui
+git commit -m "feat: add teal design tokens and Pencil mockups
+
+Status styles carry a distinct glyph as well as a hue so staffing state
+survives greyscale and colour-blind reading. Status colours sit outside the
+brand family so amber never reads as brand chrome.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 17: UI foundation — layout, skeletons, landing, login
+
+**Files:**
+- Create: `components/ui/*` (shadcn), `components/skeletons/index.tsx`, `components/app-shell.tsx`, `app/(marketing)/page.tsx`, `app/login/page.tsx`, `app/(app)/layout.tsx`
+- Test: `tests/ui/skeletons.test.tsx`
+
+**Interfaces:**
+- Consumes: `STATUS_STYLES` (Task 16), `ROLE_PERMISSIONS`/`can` (Task 9), `signIn` (Task 9).
+- Produces: `<AppShell>`, `<WeekGridSkeleton>`, `<ShiftCardSkeleton>`, `<ImportReportSkeleton>`, `<StatDot status>`.
+
+- [ ] **Step 1: Install the shadcn primitives**
+
+```bash
+npx shadcn@latest init -d
+npx shadcn@latest add button card dialog input select table badge skeleton \
+  dropdown-menu tabs accordion sonner
+```
+
+- [ ] **Step 2: Write the skeleton test**
+
+Create `tests/ui/skeletons.test.tsx` (add `environment: 'jsdom'` via a docblock):
+
+```tsx
+/** @vitest-environment jsdom */
+import { render, screen } from '@testing-library/react'
+import { describe, expect, it } from 'vitest'
+import { ShiftCardSkeleton, WeekGridSkeleton } from '@/components/skeletons'
+
+describe('skeletons', () => {
+  it('renders one column per weekday so the grid does not reflow on load', () => {
+    const { container } = render(<WeekGridSkeleton />)
+    expect(container.querySelectorAll('[data-skeleton-day]')).toHaveLength(7)
+  })
+
+  it('marks itself busy for assistive technology', () => {
+    render(<ShiftCardSkeleton />)
+    expect(screen.getByRole('status')).toHaveAttribute('aria-busy', 'true')
+  })
+})
+```
+
+Install the test deps:
+
+```bash
+npm i -D jsdom @testing-library/react @testing-library/jest-dom @vitejs/plugin-react
+```
+
+Add `@vitejs/plugin-react` to `vitest.config.ts` plugins and include `tests/**/*.test.tsx`.
+
+- [ ] **Step 3: Run it to verify it fails**
+
+Run: `npm test -- tests/ui/skeletons.test.tsx`
+Expected: FAIL — `@/components/skeletons` not found.
+
+- [ ] **Step 4: Implement the skeletons**
+
+Create `components/skeletons/index.tsx`:
+
+```tsx
+import { Skeleton } from '@/components/ui/skeleton'
+
+/**
+ * Skeletons are built from the same layout primitives and the same fixed
+ * dimensions as the real components (§8.4), so hydration swaps content in
+ * without shifting anything on the page.
+ */
+export function ShiftCardSkeleton() {
+  return (
+    <div role="status" aria-busy="true" aria-label="Loading shift"
+         className="rounded-card border bg-card p-3 space-y-2">
+      <Skeleton className="h-4 w-24" />
+      <Skeleton className="h-3 w-32" />
+      <div className="flex gap-1.5 pt-1">
+        <Skeleton className="h-5 w-16 rounded-full" />
+        <Skeleton className="h-5 w-14 rounded-full" />
+      </div>
+    </div>
+  )
+}
+
+export function WeekGridSkeleton() {
+  return (
+    <div className="grid gap-3 md:grid-cols-7">
+      {Array.from({ length: 7 }, (_, day) => (
+        <div key={day} data-skeleton-day className="space-y-3">
+          <Skeleton className="h-4 w-20" />
+          {Array.from({ length: 3 }, (_, i) => <ShiftCardSkeleton key={i} />)}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+export function ImportReportSkeleton() {
+  return (
+    <div role="status" aria-busy="true" className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-4">
+        {Array.from({ length: 4 }, (_, i) => (
+          <Skeleton key={i} className="h-24 rounded-card" />
+        ))}
+      </div>
+      {Array.from({ length: 8 }, (_, i) => <Skeleton key={i} className="h-14 w-full" />)}
+    </div>
+  )
+}
+```
+
+- [ ] **Step 5: Implement the landing page**
+
+Create `app/(marketing)/page.tsx` implementing the Task 16 Frame 1 mockup: hero
+with `.hero-gradient`, headline "Shifts That Staff Themselves", subhead naming the
+real value ("Managers post the rota. Staff claim what fits. The rules are enforced
+server-side, so double-bookings never happen."), a primary CTA to `/login`, and a
+floating dashboard card overlapping the hero's lower edge. Below it, three feature
+cards (coverage at a glance, rules that hold under load, spreadsheet import that
+shows its work) and an FAQ accordion.
+
+Keep it a server component — no client JS beyond the accordion.
+
+- [ ] **Step 6: Implement login**
+
+Create `app/login/page.tsx` — a server component rendering a client form that calls
+`signIn('credentials', { email, password, redirectTo: next ?? '/dashboard' })`,
+surfacing the error inline on failure. Include a small "demo accounts" card listing
+the seeded manager and one staff member per profession, each with a click-to-fill
+button — a reviewer should not have to leave the page to find credentials.
+
+- [ ] **Step 7: Implement the app shell**
+
+Create `components/app-shell.tsx` — header with the MedRoster mark, nav links
+filtered through `can(principal, …)` so a staff member never sees Import or
+New Shift, and a user menu with sign-out. Create `app/(app)/layout.tsx` wrapping
+children in it, reading the session server-side.
+
+- [ ] **Step 8: Run the tests to verify they pass**
+
+Run: `npm test -- tests/ui`
+Expected: PASS.
+
+- [ ] **Step 9: Verify visually**
+
+```bash
+npm run dev
+```
+
+Open `http://localhost:3000` and `http://localhost:3000/login`. Confirm the hero
+gradient matches the Task 16 mockup and the demo-account fill buttons work.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add components app/\(marketing\) app/login app/\(app\) tests/ui
+git commit -m "feat: add app shell, skeletons, landing page and login
+
+Nav links are filtered through the same permission catalog the API enforces,
+so a staff member is never shown a control that would 403. Skeletons reuse the
+real components' dimensions to avoid layout shift on hydration.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 18: Coverage dashboard — responsive week grid with jump-to-week
+
+**Files:**
+- Create: `app/(app)/dashboard/page.tsx`, `components/week-grid/week-grid.tsx`, `components/week-grid/shift-card.tsx`, `components/week-grid/week-picker.tsx`, `hooks/use-week.ts`
+- Test: `tests/ui/week-grid.test.tsx`
+
+**Interfaces:**
+- Consumes: `GET /api/weeks/[isoWeek]` + `decodeWeek` (Task 13), `computeCoverage` (Task 13), `STATUS_STYLES` (Task 16), `WeekGridSkeleton` (Task 17).
+- Produces: `<WeekGrid week={WeekView} />`, `<ShiftCard shift coverage />`, `<WeekPicker value onChange />`.
+
+- [ ] **Step 1: Write the week grid test**
+
+Create `tests/ui/week-grid.test.tsx`:
+
+```tsx
+/** @vitest-environment jsdom */
+import { render, screen, within } from '@testing-library/react'
+import { describe, expect, it } from 'vitest'
+import { ShiftCard } from '@/components/week-grid/shift-card'
+import { WeekGrid } from '@/components/week-grid/week-grid'
+import type { WeekView } from '@/lib/contracts/week'
+
+const view: WeekView = {
+  isoWeek: '2026-W33',
+  staff: [{ id: 1, name: 'Ivy Bell', profession: 'NURSE' }],
+  shifts: [
+    { id: 1, version: 0, startsAt: '2026-08-10T07:00:00.000Z', endsAt: '2026-08-10T15:00:00.000Z',
+      requirements: { DOCTOR: 1, NURSE: 2, RECEPTIONIST: 0 }, claimantIds: [1] },
+    { id: 2, version: 0, startsAt: '2026-08-11T07:00:00.000Z', endsAt: '2026-08-11T15:00:00.000Z',
+      requirements: { DOCTOR: 0, NURSE: 1, RECEPTIONIST: 0 }, claimantIds: [] },
+  ],
+}
+
+describe('ShiftCard', () => {
+  it('names exactly which roles are still missing', () => {
+    render(<ShiftCard
+      shift={view.shifts[0]!}
+      claims={{ DOCTOR: 0, NURSE: 1, RECEPTIONIST: 0 }} />)
+    expect(screen.getByText(/1 nurse/i)).toBeInTheDocument()
+    expect(screen.getByText(/1 doctor/i)).toBeInTheDocument()
+  })
+
+  it('says nothing is missing when fully staffed', () => {
+    render(<ShiftCard
+      shift={view.shifts[0]!}
+      claims={{ DOCTOR: 1, NURSE: 2, RECEPTIONIST: 0 }} />)
+    expect(screen.getByText(/fully staffed/i)).toBeInTheDocument()
+  })
+
+  it('labels status in text as well as colour', () => {
+    render(<ShiftCard shift={view.shifts[1]!} claims={{ DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 }} />)
+    expect(screen.getByText(/unstaffed/i)).toBeInTheDocument()
+  })
+})
+
+describe('WeekGrid', () => {
+  it('renders all seven days even when some have no shifts', () => {
+    render(<WeekGrid week={view} />)
+    expect(screen.getAllByRole('group', { name: /day column/i })).toHaveLength(7)
+  })
+
+  it('places each shift under its own day', () => {
+    render(<WeekGrid week={view} />)
+    const monday = screen.getByRole('group', { name: /monday/i })
+    expect(within(monday).getAllByRole('article')).toHaveLength(1)
+  })
+})
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npm test -- tests/ui/week-grid.test.tsx`
+Expected: FAIL — components not found.
+
+- [ ] **Step 3: Implement `shift-card.tsx`**
+
+Create `components/week-grid/shift-card.tsx`:
+
+```tsx
+import Link from 'next/link'
+import type { Profession } from '@prisma/client'
+import { computeCoverage } from '@/lib/coverage'
+import { PROFESSION_LABELS } from '@/lib/domain/profession'
+import { STATUS_STYLES } from '@/lib/ui/tokens'
+import type { WeekShift } from '@/lib/contracts/week'
+
+const clock = new Intl.DateTimeFormat('en-GB', {
+  hour: '2-digit', minute: '2-digit', timeZone: process.env.NEXT_PUBLIC_CLINIC_TZ ?? 'Europe/London',
+})
+
+function missingLabel(missing: Record<Profession, number>): string {
+  const parts = (Object.keys(missing) as Profession[])
+    .filter((p) => missing[p] > 0)
+    .map((p) => {
+      const n = missing[p]
+      const label = PROFESSION_LABELS[p].toLowerCase()
+      return `${n} ${label}${n === 1 ? '' : 's'}`
+    })
+  return parts.join(', ')
+}
+
+export function ShiftCard({ shift, claims }: {
+  shift: WeekShift
+  claims: Record<Profession, number>
+}) {
+  const { status, missing } = computeCoverage(shift.requirements, claims)
+  const style = STATUS_STYLES[status]
+
+  return (
+    <article className="rounded-card border bg-card p-3 transition hover:shadow-md focus-within:ring-2 focus-within:ring-brand-primary">
+      <Link href={`/shifts/${shift.id}`} className="block space-y-2 outline-none">
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-medium tabular-nums">
+            {clock.format(new Date(shift.startsAt))}–{clock.format(new Date(shift.endsAt))}
+          </span>
+          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${style.chip}`}>
+            <span aria-hidden>{style.glyph}</span>
+            {style.label}
+          </span>
+        </div>
+
+        <p className="text-sm text-muted-foreground">
+          {status === 'FULL'
+            ? 'Fully staffed'
+            : <>Still needs <span className="font-medium text-foreground">{missingLabel(missing)}</span></>}
+        </p>
+      </Link>
+    </article>
+  )
+}
+```
+
+- [ ] **Step 4: Implement `week-grid.tsx`**
+
+Create `components/week-grid/week-grid.tsx`:
+
+```tsx
+import type { Profession } from '@prisma/client'
+import { weekBounds } from '@/lib/domain/time'
+import type { WeekView } from '@/lib/contracts/week'
+import { ShiftCard } from './shift-card'
+
+const dayName = new Intl.DateTimeFormat('en-GB', { weekday: 'long' })
+const dayShort = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
+
+/**
+ * Seven columns on desktop, a stacked day list under md (§8.2). Status and the
+ * missing-roles line stay visible at every width — the grid narrows, it does not
+ * drop information.
+ */
+export function WeekGrid({ week }: { week: WeekView }) {
+  const { start } = weekBounds(week.isoWeek)
+
+  const professionOf = new Map(week.staff.map((s) => [s.id, s.profession]))
+
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const dayStart = new Date(start)
+    dayStart.setDate(start.getDate() + i)
+    const dayEnd = new Date(dayStart)
+    dayEnd.setDate(dayStart.getDate() + 1)
+
+    return {
+      date: dayStart,
+      shifts: week.shifts.filter((s) => {
+        const at = new Date(s.startsAt)
+        return at >= dayStart && at < dayEnd
+      }),
+    }
+  })
+
+  return (
+    <div className="grid gap-4 md:grid-cols-7">
+      {days.map((day) => (
+        <section
+          key={day.date.toISOString()}
+          role="group"
+          aria-label={`Day column, ${dayName.format(day.date)}`}
+          className="space-y-3"
+        >
+          <h3 className="sticky top-0 z-10 bg-background/90 pb-1 text-sm font-semibold backdrop-blur">
+            {dayShort.format(day.date)}
+          </h3>
+
+          {day.shifts.length === 0 ? (
+            <p className="rounded-card border border-dashed p-3 text-xs text-muted-foreground">
+              No shifts
+            </p>
+          ) : (
+            day.shifts.map((shift) => {
+              const claims: Record<Profession, number> = { DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 }
+              for (const id of shift.claimantIds) {
+                const p = professionOf.get(id)
+                if (p) claims[p] += 1
+              }
+              return <ShiftCard key={shift.id} shift={shift} claims={claims} />
+            })
+          )}
+        </section>
+      ))}
+    </div>
+  )
+}
+```
+
+- [ ] **Step 5: Implement the week picker and dashboard page**
+
+Create `components/week-grid/week-picker.tsx` — a client component with
+**Previous / Today / Next** buttons plus a native date input that maps the chosen
+date to its ISO week via `isoWeekOf`, satisfying the brief's "way to jump to any
+week". It pushes `?week=YYYY-Www` onto the URL so the view is linkable and the
+back button works.
+
+Create `app/(app)/dashboard/page.tsx` — a server component that reads
+`searchParams.week` (defaulting to the current week), fetches the week server-side,
+and renders `<WeekGrid>` inside `<Suspense fallback={<WeekGridSkeleton />}>`. Include
+a legend row mapping each glyph and colour to its label.
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run: `npm test -- tests/ui/week-grid.test.tsx`
+Expected: PASS, 5 tests.
+
+- [ ] **Step 7: Verify responsiveness**
+
+```bash
+npm run dev
+```
+
+Open `/dashboard?week=2026-W33` at 1440px, 768px and 390px. At 390px the grid must
+stack to one column per day with status and missing roles still legible — the brief
+states this view is checked for responsiveness.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add app/\(app\)/dashboard components/week-grid tests/ui/week-grid.test.tsx
+git commit -m "feat: add responsive coverage dashboard with jump-to-week
+
+Each card names the specific roles still missing rather than only showing a
+status colour. The week lives in the URL so views are linkable and the back
+button works.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 19: Interactions — optimistic claiming, realtime, shift forms, import UI
+
+**Files:**
+- Create: `hooks/use-realtime.ts`, `hooks/use-optimistic-claim.ts`, `app/(app)/shifts/[id]/page.tsx`, `components/shift/claim-button.tsx`, `components/shift/edit-dialog.tsx`, `app/(app)/shifts/new/page.tsx`, `app/(app)/my-shifts/page.tsx`, `app/(app)/import/page.tsx`, `app/(app)/import/[runId]/page.tsx`
+- Test: `tests/ui/optimistic.test.tsx`, `tests/ui/realtime.test.ts`
+
+**Interfaces:**
+- Consumes: every API route from Tasks 12–14; `decodeWeek` (Task 13); `STATUS_STYLES` (Task 16).
+- Produces:
+  - `useRealtimeWeek(isoWeek, { onEvent }): { connected: boolean }`
+  - `useOptimisticClaim(shiftId): { claim, release, pending, error }`
+  - `newMutationId(): string`
+
+- [ ] **Step 1: Write the realtime reconciliation test**
+
+Create `tests/ui/realtime.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { applyEvent, newMutationId, shouldApply } from '@/hooks/use-realtime'
+
+describe('newMutationId', () => {
+  it('is long enough to be unique and satisfies the contract', () => {
+    const id = newMutationId()
+    expect(id.length).toBeGreaterThanOrEqual(8)
+    expect(newMutationId()).not.toBe(id)
+  })
+})
+
+describe('shouldApply', () => {
+  it('drops the originator\'s own echo, which was already applied optimistically', () => {
+    const mine = new Set(['abc12345'])
+    expect(shouldApply({ id: '5', type: 'shift.claimed', payload: {}, mutationId: 'abc12345' }, mine)).toBe(false)
+  })
+
+  it('applies an event from another user', () => {
+    expect(shouldApply({ id: '5', type: 'shift.claimed', payload: {}, mutationId: 'other999' }, new Set())).toBe(true)
+  })
+
+  it('applies an event with no mutation id', () => {
+    expect(shouldApply({ id: '5', type: 'shift.claimed', payload: {}, mutationId: null }, new Set())).toBe(true)
+  })
+})
+
+describe('applyEvent', () => {
+  const week = {
+    isoWeek: '2026-W33',
+    staff: [{ id: 1, name: 'Ivy', profession: 'NURSE' as const }],
+    shifts: [{
+      id: 10, version: 0, startsAt: '2026-08-10T07:00:00.000Z', endsAt: '2026-08-10T15:00:00.000Z',
+      requirements: { DOCTOR: 0, NURSE: 2, RECEPTIONIST: 0 }, claimantIds: [],
+    }],
+  }
+
+  it('adds a claimant on shift.claimed', () => {
+    const next = applyEvent(week, {
+      id: '1', type: 'shift.claimed', mutationId: null,
+      payload: { shiftId: 10, userId: 2, name: 'Omar', profession: 'NURSE' },
+    })
+    expect(next.shifts[0]!.claimantIds).toEqual([2])
+    expect(next.staff.find((s) => s.id === 2)?.name).toBe('Omar')
+  })
+
+  it('removes a claimant on shift.unclaimed', () => {
+    const seeded = { ...week, shifts: [{ ...week.shifts[0]!, claimantIds: [1] }] }
+    const next = applyEvent(seeded, {
+      id: '2', type: 'shift.unclaimed', mutationId: null, payload: { shiftId: 10, userId: 1 },
+    })
+    expect(next.shifts[0]!.claimantIds).toEqual([])
+  })
+
+  it('removes every dropped claimant on shift.claims_dropped', () => {
+    const seeded = { ...week, shifts: [{ ...week.shifts[0]!, claimantIds: [1, 2] }] }
+    const next = applyEvent(seeded, {
+      id: '3', type: 'shift.claims_dropped', mutationId: null,
+      payload: { shiftId: 10, dropped: [{ userId: 1 }, { userId: 2 }] },
+    })
+    expect(next.shifts[0]!.claimantIds).toEqual([])
+  })
+
+  it('drops the shift entirely on shift.deleted', () => {
+    const next = applyEvent(week, {
+      id: '4', type: 'shift.deleted', mutationId: null, payload: { shiftId: 10 },
+    })
+    expect(next.shifts).toHaveLength(0)
+  })
+
+  it('leaves the view untouched for an unknown event type', () => {
+    expect(applyEvent(week, { id: '5', type: 'nonsense', mutationId: null, payload: {} })).toEqual(week)
+  })
+})
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npm test -- tests/ui/realtime.test.ts`
+Expected: FAIL — `@/hooks/use-realtime` not found.
+
+- [ ] **Step 3: Implement `use-realtime.ts`**
+
+Create `hooks/use-realtime.ts`:
+
+```ts
+'use client'
+
+import { useEffect, useRef, useState } from 'react'
+import { createClient, type RealtimeChannel } from '@supabase/supabase-js'
+import type { OutboxEvent } from '@/lib/contracts/events'
+import type { WeekView } from '@/lib/contracts/week'
+
+export function newMutationId(): string {
+  return crypto.randomUUID().replace(/-/g, '').slice(0, 16)
+}
+
+/**
+ * An event the caller originated has already been applied optimistically, so
+ * replaying it would flicker. Everyone else's events apply normally (§7.1).
+ */
+export function shouldApply(event: OutboxEvent, ownMutationIds: Set<string>): boolean {
+  return !event.mutationId || !ownMutationIds.has(event.mutationId)
+}
+
+/** Pure reducer, so the reconciliation rules are testable without a socket. */
+export function applyEvent(week: WeekView, event: OutboxEvent): WeekView {
+  const p = event.payload as Record<string, never>
+  const shiftId = Number(p.shiftId)
+
+  switch (event.type) {
+    case 'shift.claimed': {
+      const userId = Number(p.userId)
+      const staff = week.staff.some((s) => s.id === userId)
+        ? week.staff
+        : [...week.staff, { id: userId, name: String(p.name), profession: p.profession }]
+      return {
+        ...week, staff,
+        shifts: week.shifts.map((s) =>
+          s.id === shiftId && !s.claimantIds.includes(userId)
+            ? { ...s, claimantIds: [...s.claimantIds, userId] }
+            : s),
+      }
+    }
+    case 'shift.unclaimed': {
+      const userId = Number(p.userId)
+      return {
+        ...week,
+        shifts: week.shifts.map((s) =>
+          s.id === shiftId ? { ...s, claimantIds: s.claimantIds.filter((id) => id !== userId) } : s),
+      }
+    }
+    case 'shift.claims_dropped': {
+      const dropped = new Set((p.dropped as unknown as { userId: number }[]).map((d) => d.userId))
+      return {
+        ...week,
+        shifts: week.shifts.map((s) =>
+          s.id === shiftId ? { ...s, claimantIds: s.claimantIds.filter((id) => !dropped.has(id)) } : s),
+      }
+    }
+    case 'shift.deleted':
+      return { ...week, shifts: week.shifts.filter((s) => s.id !== shiftId) }
+    default:
+      return week
+  }
+}
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
+)
+
+export function useRealtimeWeek(
+  isoWeek: string,
+  handlers: { onEvent: (e: OutboxEvent) => void; onResync: () => void },
+): { connected: boolean } {
+  const [connected, setConnected] = useState(false)
+  const lastIdRef = useRef('0')
+  const handlersRef = useRef(handlers)
+  handlersRef.current = handlers
+
+  useEffect(() => {
+    const topic = `week:${isoWeek}`
+    let channel: RealtimeChannel | undefined
+    let cancelled = false
+
+    /** Fetches everything missed since lastId — broadcast has no history (§7.1). */
+    async function catchUp() {
+      const res = await fetch(
+        `/api/events/since?topic=${encodeURIComponent(topic)}&id=${lastIdRef.current}`)
+      if (!res.ok || cancelled) return
+      const body = await res.json() as { events: OutboxEvent[]; lastId: string; truncated: boolean }
+
+      if (body.truncated) {
+        // Too far behind to reconcile event-by-event; refetch rather than diverge.
+        lastIdRef.current = body.lastId
+        handlersRef.current.onResync()
+        return
+      }
+      for (const event of body.events) handlersRef.current.onEvent(event)
+      lastIdRef.current = body.lastId
+    }
+
+    channel = supabase
+      .channel(topic, { config: { broadcast: { self: true } } })
+      .on('broadcast', { event: '*' }, ({ payload }) => {
+        const event = payload as OutboxEvent
+        if (Number(event.id) <= Number(lastIdRef.current)) return // already seen
+        lastIdRef.current = event.id
+        handlersRef.current.onEvent(event)
+      })
+      .subscribe((status) => {
+        setConnected(status === 'SUBSCRIBED')
+        if (status === 'SUBSCRIBED') void catchUp()
+      })
+
+    // A tab woken from sleep may have missed everything; reconcile on focus.
+    const onVisible = () => { if (document.visibilityState === 'visible') void catchUp() }
+    document.addEventListener('visibilitychange', onVisible)
+
+    return () => {
+      cancelled = true
+      document.removeEventListener('visibilitychange', onVisible)
+      if (channel) void supabase.removeChannel(channel)
+    }
+  }, [isoWeek])
+
+  return { connected }
+}
+```
+
+- [ ] **Step 4: Write the optimistic claim test**
+
+Create `tests/ui/optimistic.test.tsx`:
+
+```tsx
+/** @vitest-environment jsdom */
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ClaimButton } from '@/components/shift/claim-button'
+
+afterEach(() => { vi.restoreAllMocks() })
+
+describe('ClaimButton', () => {
+  it('shows the claimed state immediately, before the server responds', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {}))) // never resolves
+    render(<ClaimButton shiftId={1} claimed={false} userId={7} />)
+
+    await userEvent.click(screen.getByRole('button', { name: /claim/i }))
+    expect(screen.getByRole('button', { name: /release/i })).toBeInTheDocument()
+  })
+
+  it('rolls back and shows the server\'s own message on rejection', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ error: { code: 'ROLE_FULL', message: 'This shift already has 3 of 3 nurses.' } }),
+      { status: 409 },
+    )))
+    render(<ClaimButton shiftId={1} claimed={false} userId={7} />)
+
+    await userEvent.click(screen.getByRole('button', { name: /claim/i }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /claim/i })).toBeInTheDocument()
+      expect(screen.getByRole('alert')).toHaveTextContent('This shift already has 3 of 3 nurses.')
+    })
+  })
+
+  it('surfaces the overlap message verbatim rather than a generic failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ error: { code: 'OVERLAP', message: 'Overlaps a shift you already hold, 08:00–16:00 12 Aug.' } }),
+      { status: 409 },
+    )))
+    render(<ClaimButton shiftId={1} claimed={false} userId={7} />)
+
+    await userEvent.click(screen.getByRole('button', { name: /claim/i }))
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('Overlaps a shift you already hold')
+    })
+  })
+})
+```
+
+Install: `npm i -D @testing-library/user-event`
+
+- [ ] **Step 5: Implement `claim-button.tsx`**
+
+Create `components/shift/claim-button.tsx`:
+
+```tsx
+'use client'
+
+import { useState, useTransition } from 'react'
+import { Button } from '@/components/ui/button'
+import { newMutationId } from '@/hooks/use-realtime'
+
+/**
+ * Optimistic claim/release (§8.3). The state flips before the request lands and
+ * rolls back on rejection, showing the SERVER's message — the same string the
+ * validator produced. Surfacing it verbatim is what demonstrates the rule is
+ * enforced server-side rather than guessed at in the client.
+ */
+export function ClaimButton({ shiftId, claimed, userId }: {
+  shiftId: number
+  claimed: boolean
+  userId: number
+}) {
+  const [optimistic, setOptimistic] = useState(claimed)
+  const [error, setError] = useState<string | null>(null)
+  const [pending, startTransition] = useTransition()
+
+  async function toggle() {
+    const next = !optimistic
+    const previous = optimistic
+
+    setOptimistic(next)   // flip first
+    setError(null)
+
+    const mutationId = newMutationId()
+    const res = next
+      ? await fetch(`/api/shifts/${shiftId}/claims`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mutationId }),
+        })
+      : await fetch(`/api/shifts/${shiftId}/claims/${userId}?mutationId=${mutationId}`, {
+          method: 'DELETE',
+        })
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => null) as { error?: { message: string } } | null
+      setOptimistic(previous)   // roll back
+      setError(body?.error?.message ?? 'Something went wrong. Please try again.')
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <Button
+        onClick={() => startTransition(toggle)}
+        disabled={pending}
+        variant={optimistic ? 'outline' : 'default'}
+      >
+        {optimistic ? 'Release shift' : 'Claim shift'}
+      </Button>
+
+      {error && (
+        <p role="alert" className="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:bg-rose-950 dark:text-rose-200">
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
+```
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run: `npm test -- tests/ui`
+Expected: PASS.
+
+- [ ] **Step 7: Build the remaining screens**
+
+Each follows the mockups from Task 16 and reuses the components above.
+
+**`app/(app)/shifts/[id]/page.tsx`** — time, requirements as filled/total per
+profession, claimant list, `<ClaimButton>` for staff. For managers: an assign
+control (staff picker → `POST …/claims` with `userId`), plus Edit and Delete.
+
+**`components/shift/edit-dialog.tsx`** — on submit, first `PATCH ?dryRun=1`. If
+`dropped` is non-empty, show the drop preview naming each person and their reason,
+requiring explicit confirmation. Confirming re-submits without `dryRun`, carrying
+the `expectedVersion` from the preview. On `VERSION_CONFLICT`, re-run the preview
+and tell the user it changed rather than silently retrying.
+
+**`app/(app)/shifts/new/page.tsx`** — date, times, per-profession counts, and an
+optional recurrence block (weekday checkboxes + until-date) posting to
+`POST /api/shifts`.
+
+**`app/(app)/my-shifts/page.tsx`** — the signed-in staff member's claims, upcoming
+first, with release buttons and a notice area listing any `shift.claims_dropped`
+events affecting them.
+
+**`app/(app)/import/page.tsx`** — a file input with a STAFF/SHIFT selector posting
+to `POST /api/imports`, plus the paginated run history linking to each report.
+
+**`app/(app)/import/[runId]/page.tsx`** — the Import Report. Four stat tiles
+(accepted / repaired / merged / rejected), outcome filter tabs, and a paginated
+table where each row shows the **raw source line** in monospace, its outcome chip,
+and every issue as `message` with `before → after` when present. This is the
+brief's explicit deliverable: for every rejected or merged row, the row, what was
+wrong, and what was done.
+
+Wire `useRealtimeWeek` into the dashboard and shift detail pages, with `onResync`
+calling `router.refresh()`.
+
+- [ ] **Step 8: Verify the full flow manually**
+
+```bash
+docker compose up
+```
+
+Then, in two browser windows:
+1. Sign in as the manager in one, a nurse in the other.
+2. Nurse claims a shift → the manager's dashboard card updates without refresh.
+3. Nurse claims an overlapping shift → rejected with the overlap message naming
+   the conflicting shift.
+4. Manager edits that shift's time to collide with another of the nurse's →
+   preview names the nurse and the reason; confirming drops them and the nurse's
+   `/my-shifts` shows the notice.
+5. Manager uploads `staff.csv` at `/import` → report shows 34/3/4 with the Janitor
+   row explaining exactly why it was rejected.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add hooks components/shift app/\(app\) tests/ui
+git commit -m "feat: add optimistic claiming, realtime week sync and remaining screens
+
+Claim state flips before the request lands and rolls back showing the server's
+own rejection message. Realtime reconciliation is a pure reducer, so echo
+suppression and replay are tested without a socket.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 20: Documentation and deployment
+
+**Files:**
+- Modify: `README.md`
+- Create: `DECISIONS.md`, `.github/workflows/ci.yml`
+
+**Interfaces:**
+- Consumes: everything.
+- Produces: a deployed URL, a reviewable README, and the decisions document the brief requires.
+
+- [ ] **Step 1: Run the full test suite**
+
+Run: `npm test`
+Expected: PASS across import, rules, concurrency, contracts, rbac, api, seed and ui.
+Record the actual counts — the README should not claim more than you ran.
+
+- [ ] **Step 2: Write the README**
+
+Rewrite `README.md` covering, in this order: what it is; the stack and why;
+**one-command local setup** (`docker compose up`, noting it migrates and seeds
+automatically); the test command; **seeded credentials** — the manager plus one
+doctor, one nurse and one receptionist, choosing staff who already hold
+overlapping claims so a reviewer can trigger both rejection rules immediately;
+the live URL with a cold-start note; and a short "what to look at" list pointing
+at the import report, the concurrency test, and the edit drop-preview.
+
+- [ ] **Step 3: Write DECISIONS.md**
+
+Cover each decision with its reasoning:
+
+- **Editing a shift with claims** — re-validate and drop only genuine conflicts,
+  with preview + version-guarded confirm (§4.3); why not block-the-edit.
+- **Date formats** — `dd/mm/yyyy` and `mm-dd-yyyy` established from corpus
+  evidence and cross-checked against shift_id ordering (§2.2), not guessed.
+- **The same-slot trap** — why the shift merge key includes requirements, and
+  that keying on the time slot alone would have destroyed ~40 real shifts.
+- **Two deliberate non-actions** — never re-casing personal names; never
+  word-parsing free-text requirements.
+- **Rejecting blank emails** — email is the login identity.
+- **Concurrency** — advisory locks in a fixed global order, why that ordering
+  prevents deadlock, and the unique-constraint backstop.
+- **SSE → Supabase Realtime** — the transport substitution and which guarantees
+  were preserved (§7.1).
+- **Compressed week payload** — the readability trade-off and why it is confined
+  to one endpoint.
+- **Seeded claims** — why the seed goes through the real validator.
+- **One thing to do differently with more time:** persist drop notices as a
+  first-class `Notification` model rather than deriving them from the event
+  outbox — the outbox is pruned, so a staff member who does not log in for a
+  while can currently miss the fact that they were dropped from a shift.
+
+- [ ] **Step 4: Add CI**
+
+Create `.github/workflows/ci.yml` running `npm ci`, `npx prisma generate`,
+`npm run build` and `npm test` on push. Testcontainers needs Docker, which
+`ubuntu-latest` provides.
+
+- [ ] **Step 5: Deploy**
+
+1. Create the Supabase project; copy `DATABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`
+   and `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+2. `npx prisma migrate deploy` against it — this installs the broadcast trigger,
+   since the `realtime` schema exists there.
+3. `npx tsx prisma/seed.ts` against it.
+4. Deploy to Vercel with those env vars plus `AUTH_SECRET`, `CLINIC_TZ` and
+   `SEED_PASSWORD`.
+5. Verify on the deployed URL: sign in, claim a shift in two browsers, confirm the
+   realtime update, and open the import report.
+
+- [ ] **Step 6: Verify the deployment before claiming it works**
+
+Confirm each: the dashboard shows all three coverage states; a duplicate claim is
+rejected with a clear message; the import report shows 34/3/4 and 109/2/6; the
+dashboard is usable at 390px.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add README.md DECISIONS.md .github
+git commit -m "docs: add README, DECISIONS and CI
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+## Self-Review
+
+**Spec coverage:**
+
+| Spec section | Task(s) |
+|---|---|
+| §1 Stack | 1 |
+| §2 Source data analysis | 5, 6, 7 (encoded as rules and golden assertions) |
+| §3 Data model | 2 |
+| §4.1 Validator | 10 |
+| §4.2 Concurrency | 10 |
+| §4.3 Edit with claims | 11 |
+| §4.4 Delete with claims | 11 |
+| §4.5 Unclaim / past shifts | 10 (`SHIFT_IN_PAST` in validator and `unassignClaim`) |
+| §5 Import engine | 4, 5, 6, 7, 8 |
+| §6.1 Contracts | 12 |
+| §6.2 Compressed JSON | 13 |
+| §6.3 RBAC | 9 |
+| §6.4 Pagination | 12 |
+| §6.5 Endpoints | 12, 13, 14 |
+| §7.1 Realtime fan-out | 14, 19 |
+| §7.2 Seeding | 15 |
+| §8.1 Visual language | 16 |
+| §8.2 Screens | 17, 18, 19 |
+| §8.3 Optimistic UI | 19 |
+| §8.4 Skeletons | 17 |
+| §9 Recurring shifts | 12 (`occurrenceDates` + series), 19 (form) |
+| §10 Testing | throughout; suite complete at 20 |
+| §11 Deliverables | 20 |
+
+No spec section is unimplemented.
+
+**Type consistency check:** `validateAssignment(shift, user, ctx, now)` keeps the
+same four-parameter signature in Tasks 10 and 11. `ClaimContext` uses
+`claimsByProfession` and `userOtherShifts` throughout. `EditPreview` is
+`{ version, kept, dropped }` in `edit.ts`, the Zod schema and the dialog.
+`ImportResult<T>` is `{ rows, accepted, stats }` in Tasks 7, 8 and 15.
+`CompressedWeek` field names `w/p/s/h` match between encoder, decoder and route.
+`STATUS_STYLES` entries carry `label/glyph/dot/chip` in both Task 16 and Task 18.
+
+**Known ordering note:** `tests/rbac/routes.test.ts` (Task 9) is written before any
+route exists and does not pass until Task 12. This is called out in Task 9 Step 7
+so an implementer does not treat it as a failure.
+
