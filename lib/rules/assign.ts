@@ -3,6 +3,7 @@ import { createAppError, type AppError } from '@/lib/domain/errors'
 import { emitEvent } from '@/lib/events/outbox'
 import { weekTopic } from '@/lib/events/topics'
 import { withOrderedLocks } from './locks'
+import { withRetry } from './retry'
 import { validateAssignment, type ClaimContext } from './validate'
 
 export interface AssignInput {
@@ -17,22 +18,12 @@ export interface AssignInput {
 
 const ZERO: Record<Profession, number> = { DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 }
 
-/** Retries a transaction on serialization failure and deadlock (§4.2). */
-async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
-  let lastError: unknown
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await fn()
-    } catch (err) {
-      const code = (err as { code?: string }).code
-      // 40001 serialization_failure, 40P01 deadlock_detected
-      if (code !== '40001' && code !== '40P01') throw err
-      lastError = err
-      await new Promise((r) => setTimeout(r, 10 * (i + 1) + Math.floor(Math.random() * 10)))
-    }
-  }
-  throw lastError
-}
+/**
+ * READ COMMITTED is load-bearing here, not incidental — see the comment on
+ * `withOrderedLocks` in `./locks` for why a stronger isolation level silently
+ * lets this same code oversell a shift.
+ */
+export const TX_OPTIONS = { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
 
 /**
  * The ONLY function in the codebase that creates a Claim (§4.1). Staff claims,
@@ -56,6 +47,18 @@ export async function assignClaim(
         const user = await tx.user.findUnique({ where: { id: input.userId } })
         if (!user) return createAppError('NOT_FOUND', 'That staff member no longer exists.')
 
+        const isSelfClaim = input.actorId === user.id
+        if (!isSelfClaim) {
+          // A manager is assigning someone else — confirm the actor is real
+          // before it lands in Claim.assignedById, otherwise a stale/bad
+          // actorId would surface as an unhandled foreign-key failure.
+          const actor = await tx.user.findUnique({
+            where: { id: input.actorId },
+            select: { id: true },
+          })
+          if (!actor) return createAppError('NOT_FOUND', 'The assigning manager no longer exists.')
+        }
+
         const existing = await tx.claim.findUnique({
           where: { shiftId_userId: { shiftId: shift.id, userId: user.id } },
         })
@@ -74,7 +77,7 @@ export async function assignClaim(
 
         const otherClaims = await tx.claim.findMany({
           where: { userId: user.id, shiftId: { not: shift.id } },
-          select: { shift: { select: { startsAt: true, endsAt: true } } },
+          select: { shift: { select: { id: true, startsAt: true, endsAt: true } } },
         })
 
         const ctx: ClaimContext = {
@@ -89,7 +92,7 @@ export async function assignClaim(
           data: {
             shiftId: shift.id,
             userId: user.id,
-            assignedById: input.actorId === user.id ? null : input.actorId,
+            assignedById: isSelfClaim ? null : input.actorId,
           },
         })
 
@@ -105,10 +108,25 @@ export async function assignClaim(
 
         return { claimId: claim.id }
       }),
+    TX_OPTIONS,
     ).catch((err: unknown) => {
-      // The unique constraint is the last line of defence behind the lock.
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        return createAppError('ALREADY_CLAIMED', 'You already hold this shift.')
+        // Unreachable while the advisory lock holds — a hit here is evidence
+        // of a lock regression, not a benign duplicate submit, so it must
+        // leave a trace rather than being silently presented as one.
+        console.warn(
+          'assignClaim: unique-constraint backstop fired — advisory lock may be ineffective',
+          err.meta,
+        )
+        if ((err.meta?.target as string[] | undefined)?.includes('userId')) {
+          return createAppError('ALREADY_CLAIMED', 'You already hold this shift.')
+        }
+        throw err
+      }
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') {
+        // Backstop for the same actor-existence race the proactive check above
+        // covers — belt and braces rather than an unhandled 500.
+        return createAppError('NOT_FOUND', 'The assigning manager no longer exists.')
       }
       throw err
     }),
@@ -151,6 +169,7 @@ export async function unassignClaim(input: UnassignInput): Promise<{ ok: true } 
 
         return { ok: true as const }
       }),
+    TX_OPTIONS,
     ),
   )
 }

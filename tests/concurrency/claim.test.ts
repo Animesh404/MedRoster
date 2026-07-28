@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
-import { assignClaim } from '@/lib/rules/assign'
+import { assignClaim, unassignClaim } from '@/lib/rules/assign'
 import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
 
 const FUTURE = new Date('2026-12-01T09:00:00Z')
@@ -103,5 +103,90 @@ describe('concurrent claiming', () => {
       assignClaim({ db, shiftId: shift.id, userId: n.id, actorId: n.id })))
 
     expect(await db.eventOutbox.count({ where: { type: 'shift.claimed' } })).toBe(2)
+  })
+
+  it('lets exactly 3 of 50 simultaneous nurses onto a 3-nurse shift', async () => {
+    const db = await getTestDb()
+    const { shift, nurses } = await seedShiftAndNurses(50, 3)
+
+    const results = await Promise.all(
+      nurses.map((n) => assignClaim({ db, shiftId: shift.id, userId: n.id, actorId: n.id })),
+    )
+
+    const won = results.filter((r) => 'claimId' in r)
+    const lost = results.filter((r) => 'code' in r)
+
+    expect(won).toHaveLength(3)
+    expect(lost).toHaveLength(47)
+    expect(lost.every((r) => (r as { code: string }).code === 'ROLE_FULL')).toBe(true)
+    expect(await db.claim.count({ where: { shiftId: shift.id } })).toBe(3)
+  })
+
+  it('mixed concurrent claims and unclaims on one shift never oversell, never go negative, and stay event-consistent', async () => {
+    const db = await getTestDb()
+    const { shift, nurses } = await seedShiftAndNurses(6, 3)
+    const [holder0, holder1, holder2, fresh3, fresh4, fresh5] = nurses
+
+    // Establish a baseline: three incumbents already hold the shift.
+    for (const n of [holder0!, holder1!, holder2!]) {
+      const r = await assignClaim({ db, shiftId: shift.id, userId: n.id, actorId: n.id })
+      expect('claimId' in r).toBe(true)
+    }
+
+    // Race two unclaims against three fresh claims on the same 3-nurse shift.
+    await Promise.all([
+      unassignClaim({ db, shiftId: shift.id, userId: holder0!.id }),
+      unassignClaim({ db, shiftId: shift.id, userId: holder1!.id }),
+      assignClaim({ db, shiftId: shift.id, userId: fresh3!.id, actorId: fresh3!.id }),
+      assignClaim({ db, shiftId: shift.id, userId: fresh4!.id, actorId: fresh4!.id }),
+      assignClaim({ db, shiftId: shift.id, userId: fresh5!.id, actorId: fresh5!.id }),
+    ])
+
+    const dbCount = await db.claim.count({ where: { shiftId: shift.id } })
+    expect(dbCount).toBeGreaterThanOrEqual(0)
+    expect(dbCount).toBeLessThanOrEqual(3)
+
+    const claimedEvents = await db.eventOutbox.count({ where: { type: 'shift.claimed' } })
+    const unclaimedEvents = await db.eventOutbox.count({ where: { type: 'shift.unclaimed' } })
+    expect(claimedEvents - unclaimedEvents).toBe(dbCount)
+  })
+
+  it('a manager assigning and the staff member self-claiming the same 1-nurse shift race to exactly one winner', async () => {
+    const db = await getTestDb()
+    const { shift, nurses } = await seedShiftAndNurses(1, 1)
+    const nurse = nurses[0]!
+    const manager = await db.user.create({
+      data: { email: 'mgr@c.test', name: 'Manager', passwordHash: 'x', role: 'MANAGER', profession: null },
+    })
+
+    const results = await Promise.all([
+      assignClaim({ db, shiftId: shift.id, userId: nurse.id, actorId: nurse.id }),
+      assignClaim({ db, shiftId: shift.id, userId: nurse.id, actorId: manager.id }),
+    ])
+
+    expect(results.filter((r) => 'claimId' in r)).toHaveLength(1)
+    expect(results.filter((r) => 'code' in r && r.code === 'ALREADY_CLAIMED')).toHaveLength(1)
+    expect(await db.claim.count({ where: { shiftId: shift.id, userId: nurse.id } })).toBe(1)
+  })
+
+  it('records assignedById as the manager on assignment and null on self-claim', async () => {
+    const db = await getTestDb()
+    const manager = await db.user.create({
+      data: { email: 'mgr2@c.test', name: 'Manager', passwordHash: 'x', role: 'MANAGER', profession: null },
+    })
+    const { shift, nurses } = await seedShiftAndNurses(2, 2)
+    const [selfNurse, assignedNurse] = nurses
+
+    const selfResult = await assignClaim({ db, shiftId: shift.id, userId: selfNurse!.id, actorId: selfNurse!.id })
+    const assignResult = await assignClaim({ db, shiftId: shift.id, userId: assignedNurse!.id, actorId: manager.id })
+
+    if (!('claimId' in selfResult)) throw new Error(`expected self-claim to succeed, got ${JSON.stringify(selfResult)}`)
+    if (!('claimId' in assignResult)) throw new Error(`expected manager assignment to succeed, got ${JSON.stringify(assignResult)}`)
+
+    const selfClaim = await db.claim.findUniqueOrThrow({ where: { id: selfResult.claimId } })
+    const assignedClaim = await db.claim.findUniqueOrThrow({ where: { id: assignResult.claimId } })
+
+    expect(selfClaim.assignedById).toBeNull()
+    expect(assignedClaim.assignedById).toBe(manager.id)
   })
 })

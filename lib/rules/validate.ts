@@ -18,8 +18,9 @@ export interface UserForValidation {
 export interface ClaimContext {
   /** How many claims the shift already holds, per profession. */
   claimsByProfession: Record<Profession, number>
-  /** Every OTHER shift this user already holds, as intervals. */
-  userOtherShifts: Interval[]
+  /** Every OTHER shift this user already holds, as intervals — with the shift's
+   *  id so an OVERLAP error's meta can deep-link to the conflicting shift. */
+  userOtherShifts: (Interval & { id: number })[]
 }
 
 const timeLabel = (d: Date) =>
@@ -45,12 +46,16 @@ export function validateAssignment(
     return createAppError('SHIFT_IN_PAST', 'This shift has already started.')
   }
 
-  const requirement = user.profession
-    ? shift.requirements.find((r) => r.profession === user.profession)
-    : undefined
+  if (!user.profession) {
+    // Reachable whenever a manager tries to claim a shift for themselves —
+    // managers have no profession, so they can never be the one holding it.
+    return createAppError('PROFESSION_NOT_REQUIRED', 'Managers do not hold clinical shifts.')
+  }
 
-  if (!user.profession || !requirement || requirement.requiredCount === 0) {
-    const label = user.profession ? PROFESSION_LABELS[user.profession].toLowerCase() : 'that role'
+  const requirement = shift.requirements.find((r) => r.profession === user.profession)
+
+  if (!requirement || requirement.requiredCount === 0) {
+    const label = PROFESSION_LABELS[user.profession].toLowerCase()
     return createAppError('PROFESSION_NOT_REQUIRED',
       `This shift does not need a ${label}.`)
   }
@@ -58,8 +63,9 @@ export function validateAssignment(
   const filled = ctx.claimsByProfession[user.profession]
   if (filled >= requirement.requiredCount) {
     const label = PROFESSION_LABELS[user.profession].toLowerCase()
+    const noun = requirement.requiredCount === 1 ? label : `${label}s`
     return createAppError('ROLE_FULL',
-      `This shift already has ${filled} of ${requirement.requiredCount} ${label}s.`,
+      `This shift already has ${filled} of ${requirement.requiredCount} ${noun}.`,
       { profession: user.profession, filled, required: requirement.requiredCount })
   }
 
@@ -67,7 +73,7 @@ export function validateAssignment(
   if (conflict) {
     return createAppError('OVERLAP',
       `Overlaps a shift you already hold, ${timeLabel(conflict.startsAt)}–${timeLabel(conflict.endsAt)}.`,
-      { conflictStartsAt: conflict.startsAt.toISOString() })
+      { conflictStartsAt: conflict.startsAt.toISOString(), conflictShiftId: conflict.id })
   }
 
   return null
