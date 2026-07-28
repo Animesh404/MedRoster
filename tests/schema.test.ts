@@ -13,40 +13,152 @@ import { describe, expect, it } from 'vitest'
  * race guard, the CSV upsert-on-externalId importer) actually depend on at
  * runtime.
  *
- * All migration directories are read and concatenated in filename
- * (timestamp-prefixed) order, so this test does not hardcode a single
- * migration and will not rot when a later migration adds or alters columns.
+ * Earlier versions of this test concatenated every migration file's raw text
+ * and regex-matched over the union. That only proves a constraint existed at
+ * *some point* in history: a later migration that DROPs an index or
+ * constraint would leave the original CREATE text sitting in the
+ * concatenation, and every assertion would keep passing even though the
+ * constraint no longer holds. Instead, `applyMigrations` folds the
+ * migrations — applied in filename (timestamp-prefixed) order — into the net
+ * schema state (which tables/indexes/constraints currently exist), the same
+ * way Postgres would after replaying every migration.sql in order. All
+ * assertions below run against that folded state, not the raw concatenation.
  */
 
 const MIGRATIONS_DIR = path.join(process.cwd(), 'prisma', 'migrations')
 
-function readAllMigrationSql(): string {
-  const dirs = readdirSync(MIGRATIONS_DIR, { withFileTypes: true })
+function readMigrationFilesInOrder(migrationsDir: string): string[] {
+  const dirs = readdirSync(migrationsDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort()
 
   if (dirs.length === 0) {
-    throw new Error(`No migration directories found under ${MIGRATIONS_DIR}`)
+    throw new Error(`No migration directories found under ${migrationsDir}`)
   }
 
-  return dirs
-    .map((dir) => readFileSync(path.join(MIGRATIONS_DIR, dir, 'migration.sql'), 'utf-8'))
+  return dirs.map((dir) => readFileSync(path.join(migrationsDir, dir, 'migration.sql'), 'utf-8'))
+}
+
+/** Net state of the schema after applying a sequence of migration.sql files in order. */
+interface MigrationState {
+  readonly tables: ReadonlyMap<string, string>
+  readonly indexes: ReadonlyMap<string, string>
+  readonly constraints: ReadonlyMap<string, string>
+}
+
+function stripSqlComments(sql: string): string {
+  return sql
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('--'))
     .join('\n')
 }
 
-const sql = readAllMigrationSql()
-
-/** Returns the column/constraint body of a table's CREATE TABLE statement. */
-function tableBody(table: string): string {
-  const match = sql.match(new RegExp(`CREATE TABLE "${table}" \\(([\\s\\S]*?)\\);`))
-  if (!match || match[1] === undefined) {
-    throw new Error(`CREATE TABLE "${table}" not found in any applied migration`)
-  }
-  return match[1]
+function splitStatements(sql: string): string[] {
+  return sql
+    .split(';')
+    .map((statement) => statement.trim())
+    .filter((statement) => statement.length > 0)
 }
 
-describe('applied migration SQL', () => {
+const CREATE_TABLE_RE = /^CREATE TABLE "([^"]+)"\s*\(([\s\S]*)\)$/
+const DROP_TABLE_RE = /^DROP TABLE (?:IF EXISTS )?"([^"]+)"(?:\s+CASCADE)?$/i
+const CREATE_INDEX_RE = /^CREATE (?:UNIQUE )?INDEX "([^"]+)" ON /
+const DROP_INDEX_RE = /^DROP INDEX (?:IF EXISTS )?"([^"]+)"$/i
+const ADD_CONSTRAINT_RE = /^ALTER TABLE "[^"]+" ADD CONSTRAINT "([^"]+)"/
+const DROP_CONSTRAINT_RE = /^ALTER TABLE "[^"]+" DROP CONSTRAINT "([^"]+)"$/i
+
+/**
+ * Pure fold over a sequence of migration.sql file contents (in the order
+ * they'd be applied) into the resulting schema state.
+ *
+ * A later DROP undoes an earlier CREATE of the same name instead of both
+ * surviving side by side, which is the property a plain concatenate-and-regex
+ * search over the raw text cannot give you.
+ *
+ * This is deliberately minimal, test infrastructure rather than a SQL parser:
+ * it only understands the handful of DDL shapes Prisma's migration generator
+ * emits and that the assertions in this file need — CREATE/DROP TABLE,
+ * CREATE/DROP INDEX (including UNIQUE), and ALTER TABLE ADD/DROP CONSTRAINT.
+ * Anything else (e.g. ALTER COLUMN) is ignored.
+ */
+function applyMigrations(sqlFiles: readonly string[]): MigrationState {
+  const tables = new Map<string, string>()
+  const indexes = new Map<string, string>()
+  const constraints = new Map<string, string>()
+
+  for (const fileContent of sqlFiles) {
+    const statements = splitStatements(stripSqlComments(fileContent))
+
+    for (const statement of statements) {
+      const createTable = statement.match(CREATE_TABLE_RE)
+      if (createTable?.[1] !== undefined && createTable[2] !== undefined) {
+        tables.set(createTable[1], createTable[2])
+        continue
+      }
+
+      const dropTable = statement.match(DROP_TABLE_RE)
+      if (dropTable?.[1] !== undefined) {
+        tables.delete(dropTable[1])
+        continue
+      }
+
+      const createIndex = statement.match(CREATE_INDEX_RE)
+      if (createIndex?.[1] !== undefined) {
+        indexes.set(createIndex[1], statement)
+        continue
+      }
+
+      const dropIndex = statement.match(DROP_INDEX_RE)
+      if (dropIndex?.[1] !== undefined) {
+        indexes.delete(dropIndex[1])
+        continue
+      }
+
+      const addConstraint = statement.match(ADD_CONSTRAINT_RE)
+      if (addConstraint?.[1] !== undefined) {
+        constraints.set(addConstraint[1], statement)
+        continue
+      }
+
+      const dropConstraint = statement.match(DROP_CONSTRAINT_RE)
+      if (dropConstraint?.[1] !== undefined) {
+        constraints.delete(dropConstraint[1])
+        continue
+      }
+    }
+  }
+
+  return { tables, indexes, constraints }
+}
+
+function requireTable(state: MigrationState, name: string): string {
+  const body = state.tables.get(name)
+  if (body === undefined) {
+    throw new Error(`no surviving CREATE TABLE "${name}" after folding all migrations`)
+  }
+  return body
+}
+
+function requireIndex(state: MigrationState, name: string): string {
+  const statement = state.indexes.get(name)
+  if (statement === undefined) {
+    throw new Error(`no surviving index "${name}" after folding all migrations`)
+  }
+  return statement
+}
+
+function requireConstraint(state: MigrationState, name: string): string {
+  const statement = state.constraints.get(name)
+  if (statement === undefined) {
+    throw new Error(`no surviving constraint "${name}" after folding all migrations`)
+  }
+  return statement
+}
+
+const state = applyMigrations(readMigrationFilesInOrder(MIGRATIONS_DIR))
+
+describe('applied migration SQL (folded to net state)', () => {
   it('defines every model the spec requires', () => {
     for (const table of [
       'User',
@@ -58,35 +170,89 @@ describe('applied migration SQL', () => {
       'ImportRowResult',
       'EventOutbox',
     ]) {
-      expect(sql, `missing CREATE TABLE "${table}"`).toMatch(new RegExp(`CREATE TABLE "${table}" \\(`))
+      expect(state.tables.has(table), `missing CREATE TABLE "${table}"`).toBe(true)
     }
   })
 
   it('makes a user unable to hold the same shift twice', () => {
-    expect(sql).toMatch(/CREATE UNIQUE INDEX "Claim_shiftId_userId_key" ON "Claim"\("shiftId", "userId"\)/)
+    expect(requireIndex(state, 'Claim_shiftId_userId_key')).toMatch(
+      /CREATE UNIQUE INDEX "Claim_shiftId_userId_key" ON "Claim"\("shiftId", "userId"\)/,
+    )
   })
 
   it('allows only one requirement row per profession per shift', () => {
-    expect(sql).toMatch(
+    expect(requireIndex(state, 'ShiftRequirement_shiftId_profession_key')).toMatch(
       /CREATE UNIQUE INDEX "ShiftRequirement_shiftId_profession_key" ON "ShiftRequirement"\("shiftId", "profession"\)/,
     )
   })
 
   it('versions shifts so edit previews can detect concurrent writes', () => {
-    expect(tableBody('Shift')).toMatch(/"version"\s+INTEGER\s+NOT NULL/)
+    expect(requireTable(state, 'Shift')).toMatch(/"version"\s+INTEGER\s+NOT NULL/)
   })
 
   it('lets the CSV importer upsert users and shifts on their external id', () => {
-    expect(sql).toMatch(/CREATE UNIQUE INDEX "User_externalId_key" ON "User"\("externalId"\)/)
-    expect(sql).toMatch(/CREATE UNIQUE INDEX "Shift_externalId_key" ON "Shift"\("externalId"\)/)
+    expect(requireIndex(state, 'User_externalId_key')).toMatch(
+      /CREATE UNIQUE INDEX "User_externalId_key" ON "User"\("externalId"\)/,
+    )
+    expect(requireIndex(state, 'Shift_externalId_key')).toMatch(
+      /CREATE UNIQUE INDEX "Shift_externalId_key" ON "Shift"\("externalId"\)/,
+    )
   })
 
   it('cascades shift deletion to its claims and requirements', () => {
-    expect(sql).toMatch(
+    expect(requireConstraint(state, 'Claim_shiftId_fkey')).toMatch(
       /ALTER TABLE "Claim" ADD CONSTRAINT "Claim_shiftId_fkey" FOREIGN KEY \("shiftId"\) REFERENCES "Shift"\("id"\) ON DELETE CASCADE/,
     )
-    expect(sql).toMatch(
+    expect(requireConstraint(state, 'ShiftRequirement_shiftId_fkey')).toMatch(
       /ALTER TABLE "ShiftRequirement" ADD CONSTRAINT "ShiftRequirement_shiftId_fkey" FOREIGN KEY \("shiftId"\) REFERENCES "Shift"\("id"\) ON DELETE CASCADE/,
     )
+  })
+})
+
+describe('applyMigrations folding semantics (regression guard)', () => {
+  it('a later DROP INDEX removes an earlier CREATE UNIQUE INDEX from the folded state', () => {
+    const dropped = applyMigrations([
+      '-- CreateIndex\nCREATE UNIQUE INDEX "Claim_shiftId_userId_key" ON "Claim"("shiftId", "userId");',
+      '-- DropIndex\nDROP INDEX "Claim_shiftId_userId_key";',
+    ])
+
+    expect(dropped.indexes.has('Claim_shiftId_userId_key')).toBe(false)
+  })
+
+  it('a later DROP CONSTRAINT removes an earlier ADD CONSTRAINT (ON DELETE CASCADE) from the folded state', () => {
+    const dropped = applyMigrations([
+      '-- AddForeignKey\nALTER TABLE "Claim" ADD CONSTRAINT "Claim_shiftId_fkey" FOREIGN KEY ("shiftId") REFERENCES "Shift"("id") ON DELETE CASCADE ON UPDATE CASCADE;',
+      '-- DropForeignKey\nALTER TABLE "Claim" DROP CONSTRAINT "Claim_shiftId_fkey";',
+    ])
+
+    expect(dropped.constraints.has('Claim_shiftId_fkey')).toBe(false)
+  })
+
+  it('a later DROP TABLE removes an earlier CREATE TABLE from the folded state', () => {
+    const dropped = applyMigrations([
+      '-- CreateTable\nCREATE TABLE "Scratch" (\n    "id" SERIAL NOT NULL,\n\n    CONSTRAINT "Scratch_pkey" PRIMARY KEY ("id")\n);',
+      '-- DropTable\nDROP TABLE "Scratch";',
+    ])
+
+    expect(dropped.tables.has('Scratch')).toBe(false)
+  })
+
+  it('a later CREATE re-adds an index that an intervening DROP removed', () => {
+    const recreated = applyMigrations([
+      'CREATE INDEX "Foo_bar_idx" ON "Foo"("bar");',
+      'DROP INDEX "Foo_bar_idx";',
+      'CREATE INDEX "Foo_bar_idx" ON "Foo"("bar");',
+    ])
+
+    expect(recreated.indexes.has('Foo_bar_idx')).toBe(true)
+  })
+
+  it('the real migration history does not currently drop the invariants under test', () => {
+    // Sanity check that folding the actual migrations directory produces the
+    // same names as the raw-concatenation approach did — i.e. nothing here
+    // has actually regressed today. The point of this suite is that it WOULD
+    // catch it if something did.
+    expect(state.indexes.has('Claim_shiftId_userId_key')).toBe(true)
+    expect(state.constraints.has('Claim_shiftId_fkey')).toBe(true)
   })
 })
