@@ -45,6 +45,54 @@ export function WeekGridSkeleton() {
   )
 }
 
+/**
+ * Loading placeholder for the coverage dashboard's page-hero band — same
+ * `.hero-gradient` shape and a circle standing in for the `RadialGauge`, so
+ * the gradient doesn't pop in a beat after everything else.
+ */
+function DashboardHeroSkeleton() {
+  return (
+    <div className="hero-gradient flex flex-col gap-6 rounded-[18px] px-6 py-8 sm:flex-row sm:items-center sm:justify-between sm:px-10 sm:py-10">
+      <div className="space-y-3">
+        <Skeleton className="h-3 w-40 bg-white/20" />
+        <Skeleton className="h-8 w-64 bg-white/20" />
+        <Skeleton className="h-7 w-72 bg-white/20" />
+      </div>
+      <Skeleton className="h-24 w-24 shrink-0 rounded-full bg-white/20" />
+    </div>
+  )
+}
+
+/**
+ * The whole dashboard's loading state: hero, the analytics strip (stat
+ * tiles in both their tile-grid and collapsed-row forms, and the two
+ * single-hue bar charts), then the week grid. Mirrors the real page's
+ * sections 1:1 so nothing shifts position when the real data swaps in.
+ */
+export function DashboardSkeleton() {
+  return (
+    <div role="status" aria-busy="true" aria-label="Loading coverage dashboard" className="space-y-8">
+      <DashboardHeroSkeleton />
+
+      <div className="space-y-4">
+        <div className="hidden gap-3 md:grid md:grid-cols-3">
+          {Array.from({ length: 3 }, (_, i) => (
+            <Skeleton key={i} className="h-20 rounded-card" />
+          ))}
+        </div>
+        <Skeleton className="h-11 w-full rounded-card md:hidden" />
+
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+          <Skeleton className="h-48 rounded-card" />
+          <Skeleton className="h-48 rounded-card" />
+        </div>
+      </div>
+
+      <WeekGridSkeleton />
+    </div>
+  )
+}
+
 export function ImportReportSkeleton() {
   return (
     <div role="status" aria-busy="true" aria-label="Loading import report" className="space-y-4">
