@@ -2,22 +2,74 @@ import { createIssue, type Issue, type Severity } from './issues'
 
 export interface RuleContext { push(issue: Issue): void }
 
-export interface FieldRule<In, Out> {
-  /** Stable identifier, also used as the issue code and as the test-case name. */
+/**
+ * Describes one issue code a field rule can emit: which CSV column it
+ * governs, whether emitting it kills the row or repairs it, and a
+ * manager-facing sentence for the Import Report legend (Amendment A).
+ * `code` is unique across the whole registry.
+ */
+export interface RuleDescriptor {
   code: string
-  /** Human sentence for the import report legend. */
+  field: string
+  severity: Severity
   describe: string
+}
+
+export interface FieldRule<In, Out> {
+  /** Every code this rule may emit — usually one repair and one fatal. */
+  emits: RuleDescriptor[]
   /** Returns the coerced value, or null to reject the row. */
   run(input: In, ctx: RuleContext): Out | null
 }
 
 /**
- * Factory for a field rule. Rules are declared once here and reused by the
- * pipeline, the generated test suite and the import-report legend (§5.1),
- * so a rule can never exist in one of those three places but not the others.
+ * Factory for a field rule. Rules are plain values — there is no
+ * module-level mutable registry, since import-order-dependent global state
+ * is not worth the convenience. Validates at construction that `emits` is
+ * non-empty and that its codes are unique within the rule, so a rule can
+ * never emit a code it didn't declare.
  */
 export function createFieldRule<In, Out>(spec: FieldRule<In, Out>): FieldRule<In, Out> {
+  if (spec.emits.length === 0) {
+    throw new Error('createFieldRule: `emits` must declare at least one issue code.')
+  }
+  const seen = new Set<string>()
+  for (const descriptor of spec.emits) {
+    if (seen.has(descriptor.code)) {
+      throw new Error(`createFieldRule: code "${descriptor.code}" is declared twice in the same rule's emits.`)
+    }
+    seen.add(descriptor.code)
+  }
   return spec
+}
+
+/**
+ * Flattens and de-duplicates the `emits` lists of several rules into one
+ * legend, keyed by code. Throws if the same code is registered by two
+ * rules with a different `describe` or `severity` — two rules silently
+ * disagreeing about what a code means is exactly the drift this exists to
+ * prevent.
+ */
+export function collectLegend(rules: FieldRule<never, unknown>[]): RuleDescriptor[] {
+  const byCode = new Map<string, RuleDescriptor>()
+
+  for (const rule of rules) {
+    for (const descriptor of rule.emits) {
+      const existing = byCode.get(descriptor.code)
+      if (existing === undefined) {
+        byCode.set(descriptor.code, descriptor)
+        continue
+      }
+      if (existing.describe !== descriptor.describe || existing.severity !== descriptor.severity) {
+        throw new Error(
+          `collectLegend: code "${descriptor.code}" is registered twice with conflicting text — ` +
+          `"${existing.describe}" (${existing.severity}) vs "${descriptor.describe}" (${descriptor.severity}).`,
+        )
+      }
+    }
+  }
+
+  return [...byCode.values()]
 }
 
 /** Convenience for rules that repair a value in place and log the before/after. */
