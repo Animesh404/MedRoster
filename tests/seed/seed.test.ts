@@ -1,0 +1,114 @@
+import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { runShiftImport, runStaffImport } from '@/lib/import'
+import { applyShiftImport, applyStaffImport } from '@/lib/import/apply'
+import { createRng, seedClaims } from '@/lib/seed/claim-seeder'
+import { computeCoverage } from '@/lib/coverage'
+import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
+
+const META = { source: 'SEED' as const, filename: 'x.csv', passwordHash: 'x' }
+const NOW = new Date('2026-07-28T00:00:00Z')
+
+async function importFixtures() {
+  const db = await getTestDb()
+  await db.$transaction((tx) =>
+    applyStaffImport(tx, runStaffImport(readFileSync('staff.csv', 'utf8')), META), { timeout: 60_000 })
+  await db.$transaction((tx) =>
+    applyShiftImport(tx, runShiftImport(readFileSync('shifts.csv', 'utf8')),
+      { ...META, filename: 'shifts.csv' }), { timeout: 60_000 })
+  return db
+}
+
+beforeEach(resetTestDb)
+afterAll(stopTestDb)
+
+describe('createRng', () => {
+  it('produces the same sequence for the same seed', () => {
+    const a = createRng(42), b = createRng(42)
+    expect([a(), a(), a()]).toEqual([b(), b(), b()])
+  })
+
+  it('produces a different sequence for a different seed', () => {
+    expect(createRng(1)()).not.toBe(createRng(2)())
+  })
+
+  it('stays within [0, 1)', () => {
+    const r = createRng(7)
+    for (let i = 0; i < 200; i++) {
+      const v = r()
+      expect(v).toBeGreaterThanOrEqual(0)
+      expect(v).toBeLessThan(1)
+    }
+  })
+})
+
+describe('seedClaims', () => {
+  it('creates claims that all satisfy the business rules', async () => {
+    const db = await importFixtures()
+    await seedClaims(db, { seed: 1337, fillRatio: 0.55, now: NOW })
+
+    // No user may hold two overlapping shifts.
+    const claims = await db.claim.findMany({ include: { shift: true } })
+    const byUser = new Map<number, { startsAt: Date; endsAt: Date }[]>()
+    for (const c of claims) {
+      const list = byUser.get(c.userId) ?? []
+      list.push(c.shift)
+      byUser.set(c.userId, list)
+    }
+    for (const [, shifts] of byUser) {
+      shifts.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
+      for (let i = 1; i < shifts.length; i++) {
+        expect(shifts[i]!.startsAt.getTime()).toBeGreaterThanOrEqual(shifts[i - 1]!.endsAt.getTime())
+      }
+    }
+  })
+
+  it('never exceeds a shift\'s requirement for any profession', async () => {
+    const db = await importFixtures()
+    await seedClaims(db, { seed: 1337, fillRatio: 0.55, now: NOW })
+
+    const shifts = await db.shift.findMany({
+      include: { requirements: true, claims: { include: { user: true } } },
+    })
+    for (const shift of shifts) {
+      for (const req of shift.requirements) {
+        const held = shift.claims.filter((c) => c.user.profession === req.profession).length
+        expect(held, `shift ${shift.id} ${req.profession}`).toBeLessThanOrEqual(req.requiredCount)
+      }
+    }
+  })
+
+  it('is deterministic — the same seed yields the same claim set', async () => {
+    const db = await importFixtures()
+    await seedClaims(db, { seed: 1337, fillRatio: 0.55, now: NOW })
+    const first = (await db.claim.findMany({ orderBy: [{ shiftId: 'asc' }, { userId: 'asc' }] }))
+      .map((c) => `${c.shiftId}:${c.userId}`)
+
+    await db.claim.deleteMany({})
+    await seedClaims(db, { seed: 1337, fillRatio: 0.55, now: NOW })
+    const second = (await db.claim.findMany({ orderBy: [{ shiftId: 'asc' }, { userId: 'asc' }] }))
+      .map((c) => `${c.shiftId}:${c.userId}`)
+
+    expect(second).toEqual(first)
+  })
+
+  it('produces all three coverage states so the dashboard demonstrates each', async () => {
+    const db = await importFixtures()
+    await seedClaims(db, { seed: 1337, fillRatio: 0.55, now: NOW })
+
+    const shifts = await db.shift.findMany({
+      include: { requirements: true, claims: { include: { user: true } } },
+    })
+    const statuses = new Set(shifts.map((shift) => {
+      const req = { DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 }
+      for (const r of shift.requirements) req[r.profession] = r.requiredCount
+      const have = { DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 }
+      for (const c of shift.claims) if (c.user.profession) have[c.user.profession] += 1
+      return computeCoverage(req, have).status
+    }))
+
+    expect(statuses).toContain('FULL')
+    expect(statuses).toContain('PARTIAL')
+    expect(statuses).toContain('EMPTY')
+  })
+})
