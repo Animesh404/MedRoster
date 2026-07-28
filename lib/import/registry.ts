@@ -106,20 +106,18 @@ export function createRuleContext(): RuleContext & { issues: Issue[] } {
 }
 
 /**
- * Descriptors for issue codes that a pipeline emits directly via
- * `ctx.push(...)` (or `fatal`/`repairing`) outside of any single `FieldRule`
- * — codes that either fire before a single cell can be coerced, or depend on
- * combining several already-coerced fields, so they have no natural
- * `In`/`Out` to run one field rule over. `BAD_ARITY` (wrong column count) is
- * the first of these; both `lib/import/staff.ts` and `lib/import/shifts.ts`
- * emit it the same way. `lib/import/shifts.ts` additionally emits
- * `OVERNIGHT_ROLLOVER`, `EXPLICIT_NEXT_DAY` and `DURATION_TOO_LONG` this way:
- * all three depend on the combination of the date, start time and end time
- * (via `resolveShiftWindow`), not on any one cell in isolation. Without an
- * entry here, these codes would reach a manager's Import Report with no
- * explanation, since `collectLegend` only sees `FieldRule.emits`. Concatenate
- * this into `IMPORT_LEGEND` alongside `collectLegend([...STAFF_RULES,
- * ...SHIFT_RULES])` and `RECONCILE_RULES`.
+ * Descriptors for genuinely STRUCTURAL issue codes: codes that fire before a
+ * single cell can even be coerced, because the row itself is malformed (e.g.
+ * the wrong number of columns). These are pushed directly via `ctx.push(...)`
+ * outside of any single `FieldRule`, so they have no natural `In`/`Out` to
+ * run one field rule over and are absent from `collectLegend`'s output.
+ * `BAD_ARITY` (wrong column count) is the only member; both
+ * `lib/import/staff.ts` and `lib/import/shifts.ts` emit it the same way.
+ * Concatenate this into `IMPORT_LEGEND` alongside
+ * `collectLegend([...STAFF_RULES, ...SHIFT_RULES])`, `SHIFT_WINDOW_RULES` and
+ * `RECONCILE_RULES`.
+ *
+ * Do not add cross-field business-rule codes here — see `SHIFT_WINDOW_RULES`.
  */
 export const STRUCTURAL_RULES: RuleDescriptor[] = [
   {
@@ -128,6 +126,23 @@ export const STRUCTURAL_RULES: RuleDescriptor[] = [
     severity: 'FATAL',
     describe: 'Row does not have the expected number of columns and cannot be parsed.',
   },
+]
+
+/**
+ * Descriptors for `lib/import/shifts.ts`'s cross-field, shift-window business
+ * rules: `OVERNIGHT_ROLLOVER`, `EXPLICIT_NEXT_DAY` and `DURATION_TOO_LONG`.
+ * These are NOT structural in the `STRUCTURAL_RULES` sense — the row is
+ * perfectly well-formed and every individual cell coerces cleanly. They arise
+ * only once the date, start time and end time have each already been coerced
+ * and are then combined (via `resolveShiftWindow`), so no single-cell
+ * `FieldRule` naturally owns them and they are pushed directly via
+ * `ctx.push(...)` / `fatal`/`repairing` from `parseShiftRows` itself. Kept
+ * separate from `STRUCTURAL_RULES` so a manager's Import Report legend does
+ * not file "shift runs overnight" under a "structural" heading. Concatenate
+ * this into `IMPORT_LEGEND` alongside `collectLegend([...STAFF_RULES,
+ * ...SHIFT_RULES])`, `STRUCTURAL_RULES` and `RECONCILE_RULES`.
+ */
+export const SHIFT_WINDOW_RULES: RuleDescriptor[] = [
   {
     code: 'OVERNIGHT_ROLLOVER',
     field: 'end_time',
