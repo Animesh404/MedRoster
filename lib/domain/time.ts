@@ -24,6 +24,17 @@ function tzOffsetMinutes(at: Date): number {
 /**
  * Converts a clinic-local wall-clock date+time to the UTC instant it denotes.
  * `date` is "yyyy-mm-dd", `time` is "HH:MM", both as written on the roster.
+ *
+ * DST edge behaviour (empirically verified, deterministic, not a bug):
+ * - Ambiguous fall-back hour (e.g. 01:30 on 2026-10-25, which occurs twice as
+ *   clocks go back) resolves to the LATER occurrence — the post-transition
+ *   GMT reading — because the second pass re-probes the offset at `guess`,
+ *   which by then already reflects the new (GMT) offset.
+ * - Nonexistent spring-forward hour (e.g. 01:30 on 2026-03-29, which never
+ *   occurs as clocks jump from 01:00 GMT to 02:00 BST) forward-snaps: the
+ *   two-pass probe lands on the UTC instant that, read back in the clinic
+ *   zone, shows as 02:30 BST — i.e. the wall time is pushed forward by the
+ *   skipped hour rather than rejected.
  */
 export function clinicWallTimeToUtc(date: string, time: string): Date {
   const [y, mo, d] = date.split('-').map(Number)
@@ -108,11 +119,36 @@ export function isoWeekOf(d: Date): string {
   return `${t.getUTCFullYear()}-W${String(week).padStart(2, '0')}`
 }
 
+/**
+ * Number of ISO-8601 weeks in a given year — either 52 or 53.
+ *
+ * A year has 53 ISO weeks iff 1 January falls on a Thursday, or the year is
+ * a leap year and 1 January falls on a Wednesday (equivalently: iff 31
+ * December falls on a Thursday, or the year is a leap year and 31 December
+ * falls on a Friday). Most years have 52.
+ */
+export function isoWeeksInYear(year: number): 52 | 53 {
+  const jan1Day = new Date(Date.UTC(year, 0, 1)).getUTCDay() || 7 // Mon=1 … Sun=7
+  const isLeap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0
+  return jan1Day === 4 || (isLeap && jan1Day === 3) ? 53 : 52
+}
+
+const ISO_WEEK_RE = /^(\d{4})-W(\d{2})$/
+
 /** Monday 00:00 (clinic-local) through the following Monday 00:00, as UTC instants. */
 export function weekBounds(isoWeek: string): { start: Date; end: Date } {
-  const [yearStr, weekStr] = isoWeek.split('-W')
-  const year = Number(yearStr)
-  const week = Number(weekStr)
+  const match = ISO_WEEK_RE.exec(isoWeek)
+  if (!match) {
+    throw new Error(`weekBounds: malformed ISO week string "${isoWeek}" (expected "YYYY-Www", e.g. "2026-W33")`)
+  }
+  const year = Number(match[1])
+  const week = Number(match[2])
+  const maxWeek = isoWeeksInYear(year)
+  if (week < 1 || week > maxWeek) {
+    throw new Error(
+      `weekBounds: "${isoWeek}" is out of range — ${year} has ISO weeks 1..${maxWeek}`,
+    )
+  }
   const jan4 = new Date(Date.UTC(year, 0, 4))
   const jan4Day = jan4.getUTCDay() || 7
   const week1Monday = new Date(jan4)
