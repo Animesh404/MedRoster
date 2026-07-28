@@ -1,27 +1,117 @@
 @import "tailwindcss";
-@config "../tailwind.config.ts";
+
+/*
+ * MedRoster design tokens.
+ *
+ * Palette is clinical teal. Status colours (emerald / amber / rose) sit
+ * deliberately OUTSIDE the brand family so "partly staffed" amber can never be
+ * mistaken for brand chrome — on a coverage dashboard, colour carries meaning.
+ *
+ * Type roles:
+ *   display — Bricolage Grotesque, hero and section heads only. Variable
+ *             optical sizing gives large type real character; used sparingly.
+ *   sans    — IBM Plex Sans, body and UI. Built for technical/institutional
+ *             work and stays legible at the small sizes a dense rota needs.
+ *   mono    — IBM Plex Mono, times and counts. Tabular figures matter: a column
+ *             of 07:30-15:30 has to align down a week grid.
+ * The font families themselves are wired in app/layout.tsx via next/font.
+ */
 
 :root {
+  --brand-primary: #0d9488;
+  --brand-mid: #5eead4;
+  --brand-deep: #0f766e;
+  --surface-tint: #ecfdf8;
+
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: #0f172a;
+  --muted: #64748b;
+  --card: #ffffff;
+  --border: #e2e8f0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #05201d;
+    --foreground: #e6fffa;
+    --muted: #8aa8a3;
+    --card: #0a2b27;
+    --border: #14453f;
+    --surface-tint: #0a2b27;
+  }
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --color-card: var(--card);
+  --color-border: var(--border);
+  --color-muted-foreground: var(--muted);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-brand-primary: var(--brand-primary);
+  --color-brand-mid: var(--brand-mid);
+  --color-brand-deep: var(--brand-deep);
+  --color-surface-tint: var(--surface-tint);
+
+  --font-display: var(--font-bricolage), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, monospace;
+
+  --radius-card: 1rem;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+}
+
+/* The landing hero. Angled so the gradient reads as depth rather than a band. */
+.hero-gradient {
+  background:
+    radial-gradient(120% 90% at 12% 0%, var(--brand-mid) 0%, transparent 55%),
+    linear-gradient(160deg, var(--brand-primary) 0%, var(--brand-deep) 100%);
+}
+
+/*
+ * The slot meter — this product's signature element.
+ *
+ * A shift's staffing is drawn as literal slots, not a percentage: solid for
+ * people who hold it, hollow for the gap. The shape of the gap IS the data,
+ * which is what a manager is actually scanning for. It survives greyscale and
+ * colour-blind reading because filled and hollow differ in form, not just hue.
+ */
+.slot {
+  display: inline-block;
+  inline-size: 0.5rem;
+  block-size: 0.5rem;
+  border-radius: 9999px;
+  border: 1.5px solid currentColor;
+}
+
+.slot--filled {
+  background: currentColor;
+}
+
+.slot--empty {
+  background: transparent;
+  /* Hollow slots are the point of the meter, so they must not read as disabled. */
+  opacity: 0.85;
+}
+
+/* Times and headcounts must align down a column. */
+.tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
