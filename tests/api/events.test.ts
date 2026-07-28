@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { assignClaim } from '@/lib/rules/assign'
+import { outboxEventSchema } from '@/lib/contracts/events'
 import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
 
 // Route handlers call `prisma` imported from '@/lib/db/client', which in
@@ -113,6 +114,9 @@ describe('GET /api/events/since', () => {
     expect(body.events).toHaveLength(1)
     expect(Number(body.events[0]!.id)).toBeGreaterThan(Number(first.id))
     expect(body.truncated).toBe(false)
+    // MINOR-1: enforce outboxEventSchema against a real response instead of
+    // leaving it an aspirational, never-parsed contract.
+    body.events.forEach((e) => outboxEventSchema.parse(e))
   })
 
   it('rejects a malformed id or missing topic with 400, not a 500', async () => {
@@ -122,6 +126,21 @@ describe('GET /api/events/since', () => {
 
     const missingTopic = await eventsSinceGet(new Request('http://localhost/api/events/since?id=0'), noParams)
     expect(missingTopic.status).toBe(400)
+  })
+
+  it('rejects an id beyond Postgres bigint range with 400, not a 500 (CRIT-2)', async () => {
+    await asManager()
+    // 9223372036854775807 is the exact bigint max; one past it must not
+    // reach `BigInt(...)` / Prisma at all. Without the magnitude bound,
+    // Prisma throws P2020 ("Value out of range") once this hits the query
+    // engine, which withAuth's boundary turns into a bare 500.
+    const res = await eventsSinceGet(
+      new Request('http://localhost/api/events/since?id=99999999999999999999999999&topic=week:x'),
+      noParams,
+    )
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: { code: string } }
+    expect(body.error.code).toBe('INVALID_INPUT')
   })
 
   it('defaults id to 0 so a fresh client gets full history for the topic', async () => {

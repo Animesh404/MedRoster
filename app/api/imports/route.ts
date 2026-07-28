@@ -5,7 +5,7 @@ import { withAuth, errorResponse } from '@/lib/auth/with-auth'
 import { createAppError } from '@/lib/domain/errors'
 import { paginate } from '@/lib/db/paginate'
 import { pageQuerySchema } from '@/lib/contracts/common'
-import { importKindSchema } from '@/lib/contracts/imports'
+import { findNulByteField, importKindSchema, normalizeFilename } from '@/lib/contracts/imports'
 import { runShiftImport, runStaffImport } from '@/lib/import'
 import { applyShiftImport, applyStaffImport } from '@/lib/import/apply'
 import { TX_OPTIONS } from '@/lib/rules/assign'
@@ -57,6 +57,18 @@ export const POST = withAuth('import:run', async (req, ctx) => {
   if (file.size === 0) {
     return errorResponse(createAppError('INVALID_INPUT', 'The uploaded file is empty.'))
   }
+  // NOTE: this check runs after `req.formData()` above has already buffered
+  // the entire multipart body into memory — the Fetch API has no way to
+  // report a request's size before parsing completes, so there is no earlier
+  // point in this handler to reject on size. That means this cap protects
+  // the database and importer from an oversized *accepted* upload, not
+  // server memory from an oversized *attempted* one: a several-hundred-MB
+  // upload is fully buffered before this line ever runs. This is a framework
+  // constraint, not a gap in this handler, and the route is manager-only
+  // (`import:run`). The real mitigation belongs in front of Node — a
+  // reverse-proxy or platform body-size limit (e.g. nginx
+  // `client_max_body_size`, or the hosting platform's own request-size cap)
+  // — so oversized bodies never reach this process at all in production.
   if (file.size > MAX_BYTES) {
     return errorResponse(createAppError('INVALID_INPUT', 'File is larger than 2 MB.'))
   }
@@ -69,17 +81,26 @@ export const POST = withAuth('import:run', async (req, ctx) => {
   const text = await file.text()
   // Postgres `text` columns cannot store a NUL byte at all (error 22021) —
   // not a validation preference, a hard encoding limit. Binary/garbage
-  // uploads survive `file.text()` without throwing (the platform decoder is
-  // lenient), so without this check a NUL byte anywhere in the row text
-  // only surfaces once `ImportRowResult.createMany` hits the database,
-  // where it becomes an uncaught 500 instead of a clean rejection.
-  if (text.includes('\0')) {
-    return errorResponse(createAppError('INVALID_INPUT', 'File contains binary data and cannot be processed as CSV.'))
+  // content survives `file.text()` without throwing (the platform decoder is
+  // lenient), and `file.name` is just as much attacker-controlled text as the
+  // body — a filename of `evil\x00.csv` reaches `ImportRun.create` the same
+  // way an unchecked NUL in the row text would reach
+  // `ImportRowResult.createMany`. Without checking both, either one 500s
+  // inside the transaction instead of failing cleanly before it starts.
+  // See `findNulByteField` for why both fields are checked in one call.
+  const nulField = findNulByteField({ filename: file.name, content: text })
+  if (nulField) {
+    return errorResponse(createAppError(
+      'INVALID_INPUT',
+      nulField === 'filename'
+        ? 'The file name contains a NUL byte and cannot be processed.'
+        : 'File contains binary data and cannot be processed as CSV.',
+    ))
   }
   const passwordHash = await bcrypt.hash(process.env.SEED_PASSWORD ?? 'medroster123', 10)
   const meta = {
     source: 'UPLOAD' as const,
-    filename: file.name,
+    filename: normalizeFilename(file.name),
     actorId: ctx.principal.id,
     passwordHash,
   }
