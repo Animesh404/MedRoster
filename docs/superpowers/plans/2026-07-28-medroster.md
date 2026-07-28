@@ -28,6 +28,70 @@
   Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
   ```
 
+## AMENDMENT A — the rule registry must have real consumers
+
+*Added after Task 4 review. Supersedes the registry usage implied in Tasks 4–7 and the Import Report in Task 19.*
+
+Task 4 shipped `createFieldRule` as an identity function with no consumers: Tasks 5–6 as originally written declare plain `coerceX()` functions and never touch it. A factory nothing unwraps is dead weight. The decision is to **give it real consumers**, so one rule declaration feeds three things.
+
+### The contract
+
+Every rule declares the issue codes it can emit, and what each means:
+
+```ts
+export interface RuleDescriptor {
+  /** Issue code this rule emits, e.g. 'ROLE_ALIAS'. Unique across the registry. */
+  code: string
+  /** Which CSV column it governs, e.g. 'role'. */
+  field: string
+  /** Whether emitting this code kills the row or repairs it. */
+  severity: Severity
+  /** One sentence for the manager-facing Import Report legend. */
+  describe: string
+}
+
+export interface FieldRule<In, Out> {
+  /** Every code this rule may emit — usually one repair and one fatal. */
+  emits: RuleDescriptor[]
+  run(input: In, ctx: RuleContext): Out | null
+}
+
+export function createFieldRule<In, Out>(spec: FieldRule<In, Out>): FieldRule<In, Out>
+export function collectLegend(rules: FieldRule<never, never>[]): RuleDescriptor[]
+```
+
+`createFieldRule` validates at construction that `emits` is non-empty and that codes are unique within the rule. `collectLegend` flattens and de-duplicates across rules, throwing on a code registered twice with different text — two rules silently disagreeing about what `DUPLICATE_ROW` means is exactly the drift this exists to prevent.
+
+**No module-level mutable registry.** Rules are plain values; each pipeline exports its own array. Import-order-dependent global state is not worth the convenience.
+
+### Consumer 1 — the pipelines
+
+`lib/import/staff.ts` and `lib/import/shifts.ts` declare each field's rule via `createFieldRule` and export the array:
+
+```ts
+export const STAFF_RULES = [idRule, nameRule, professionRule, emailRule]
+```
+
+The `parseStaffRows` / `parseShiftRows` bodies stay structurally as the plan shows — they call `rule.run(cell, ctx)` instead of `coerceX(cell, ctx)`. Behaviour, issue codes and messages are unchanged; only the declaration site moves.
+
+### Consumer 2 — reconciliation codes
+
+Reconciliation emits codes no field rule owns (`DUPLICATE_ROW`, `DUPLICATE_ID_CONFLICT`, `DUPLICATE_PERSON`, `EMAIL_COLLISION`, `DUPLICATE_SHIFT`). `lib/import/reconcile.ts` exports `RECONCILE_RULES: RuleDescriptor[]` describing them, so the legend covers every code a manager can see — not just the field-level ones.
+
+### Consumer 3 — the Import Report legend
+
+`lib/import/legend.ts` exports `IMPORT_LEGEND = collectLegend([...STAFF_RULES, ...SHIFT_RULES]).concat(RECONCILE_RULES)`, sorted by code. Task 19's Import Report page renders it as a "what these codes mean" panel, so a manager reading `UNKNOWN_PROFESSION` gets a sentence explaining it rather than a bare token.
+
+### The test that makes this worth doing
+
+In `tests/import/legend.test.ts`, run the real `staff.csv` and `shifts.csv` through the importer, collect every distinct issue code actually emitted, and assert:
+
+1. **Every emitted code appears in `IMPORT_LEGEND`.** This is the valuable direction — it fails the build if a rule starts emitting a code that reaches a manager with no explanation.
+2. **Every legend entry's `severity` matches the severity actually observed** for that code in the run.
+3. **Codes are unique** across the whole legend.
+
+Do NOT assert that every legend entry is exercised by the two source files — some codes (`AMBIGUOUS_DATE`, `BAD_ARITY`) legitimately do not occur in this data but must still be documented for uploaded CSVs. Assert reachability only in the emitted→legend direction.
+
 ## Expected Import Result (regression anchor)
 
 These numbers are asserted by a golden-file test in Task 7 and must never drift:
