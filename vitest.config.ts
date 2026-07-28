@@ -1,11 +1,13 @@
 import { defineConfig } from 'vitest/config'
 import tsconfigPaths from 'vite-tsconfig-paths'
+import react from '@vitejs/plugin-react'
 
 export default defineConfig({
-  plugins: [tsconfigPaths()],
+  plugins: [tsconfigPaths(), react()],
   test: {
     environment: 'node',
-    include: ['tests/**/*.test.ts'],
+    include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
+    setupFiles: ['tests/setup.ts'],
     testTimeout: 120_000, // Testcontainers pulls an image on first run
     // Vitest's default hookTimeout (10s) is too tight for `beforeEach(resetTestDb)`:
     // every DB-backed test file boots its own Testcontainers Postgres, and when
