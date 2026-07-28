@@ -1,5 +1,15 @@
 import { globSync, readFileSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+// `@/auth` is next-auth's real config, which pulls in a `next/server`
+// subpath export that vitest's plain-Node ESM resolution can't find outside
+// the actual Next.js runtime (it resolves fine in `next build`/`next dev`,
+// just not here). Every other test file that imports a route module mocks
+// this out for the same reason; the brand check below needs to import every
+// route module too, so it needs the same mock.
+vi.mock('@/auth', () => ({ auth: () => Promise.resolve(null) }))
+
+const { WITH_AUTH_BRAND } = await import('@/lib/auth/with-auth')
 
 // @types/node is pinned to v20 here, which predates `fs.globSync` (added in the
 // Node 22 typings). The function exists at runtime on our Node version; this
@@ -8,6 +18,8 @@ import { describe, expect, it } from 'vitest'
 declare module 'node:fs' {
   function globSync(pattern: string | string[]): string[]
 }
+
+const HTTP_VERBS = ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const
 
 /**
  * Structural guard: every API route file must route its handlers through
@@ -26,14 +38,45 @@ describe('API route authorisation coverage', () => {
     expect(files.length).toBeGreaterThan(0)
   })
 
-  it.each(files)('%s declares a permission via withAuth', (file) => {
+  // Cheap first line: a route written as `export const GET = withAuth(...)`
+  // must contain the literal text. Kept because it's a fast, readable smoke
+  // check, but it is NOT the real guard (MIN-7): it's evadable by
+  // `export { GET }` re-exporting a handler defined elsewhere, or simply by
+  // reformatting the call across lines so the literal substring vanishes
+  // from what the regex sees on a single line.
+  it.each(files)('%s declares a permission via withAuth (regex smoke check)', (file) => {
     const src = readFileSync(file, 'utf8')
     expect(src, `${file} must import withAuth`).toContain('withAuth')
-    // Every exported HTTP verb must be produced by withAuth(...)
     const verbs = [...src.matchAll(/export const (GET|POST|PATCH|PUT|DELETE)\s*=\s*([^\n]+)/g)]
     expect(verbs.length, `${file} exports no HTTP handlers`).toBeGreaterThan(0)
     for (const [, verb, rhs] of verbs) {
       expect(rhs, `${file} ${verb} must be wrapped in withAuth`).toContain('withAuth(')
+    }
+  })
+
+  // The real guard: import the actual module and check the actual exported
+  // function object carries the brand `withAuth` stamps on everything it
+  // returns. This can't be fooled by re-exports or reformatting — it
+  // inspects the runtime value a client would actually invoke, not source
+  // text that merely looks right.
+  it.each(files)('%s exports handlers actually produced by withAuth (brand check)', async (file) => {
+    // `file` is already a cwd-relative posix path from globSync (e.g.
+    // "app/api/shifts/route.ts"); the "@/*" tsconfig path alias maps 1:1
+    // onto that, resolved here by vite-tsconfig-paths same as any other
+    // `@/...` import in this codebase.
+    const specifier = `@/${file.replace(/\.ts$/, '')}`
+    const mod: Record<string, unknown> = await import(specifier)
+
+    const exportedVerbs = HTTP_VERBS.filter((verb) => verb in mod)
+    expect(exportedVerbs.length, `${file} exports no HTTP handlers`).toBeGreaterThan(0)
+
+    for (const verb of exportedVerbs) {
+      const handler = mod[verb]
+      expect(typeof handler, `${file} ${verb} must be a function`).toBe('function')
+      expect(
+        (handler as Record<symbol, unknown>)[WITH_AUTH_BRAND],
+        `${file} ${verb} must be produced by withAuth (missing brand)`,
+      ).toBe(true)
     }
   })
 })

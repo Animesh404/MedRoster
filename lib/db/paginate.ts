@@ -2,11 +2,21 @@ export function encodeCursor(id: number): string {
   return Buffer.from(`id:${id}`, 'utf8').toString('base64url')
 }
 
+const MAX_PG_INT = 2_147_483_647
+
 export function decodeCursor(cursor: string): number | null {
   try {
     const raw = Buffer.from(cursor, 'base64url').toString('utf8')
     const m = /^id:(\d+)$/.exec(raw)
-    return m ? Number(m[1]) : null
+    if (!m) return null
+    // The regex alone doesn't bound magnitude — an arbitrarily long digit
+    // string (e.g. a forged `id:99999999999999999999`) decodes to a number
+    // Prisma's query engine rejects with a validation error (500). Bound it
+    // to what an `Int` id could ever legitimately be; anything else is
+    // indistinguishable from a garbage cursor, which already degrades to a
+    // fresh first page.
+    const n = Number(m[1])
+    return Number.isSafeInteger(n) && n >= 1 && n <= MAX_PG_INT ? n : null
   } catch {
     return null
   }

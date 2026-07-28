@@ -2,14 +2,15 @@ import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db/client'
 import { withAuth, errorResponse, type AuthedContext } from '@/lib/auth/with-auth'
 import { can, scopedPermission } from '@/lib/auth/permissions'
+import { parseDbId } from '@/lib/contracts/common'
 import { createAppError } from '@/lib/domain/errors'
 import { unassignClaim } from '@/lib/rules/assign'
 
 export const DELETE = withAuth('claim:delete:self', async (req: Request, ctx: AuthedContext<{ id: string; userId: string }>) => {
   const { id, userId } = await ctx.params
-  const shiftId = Number(id)
-  const targetUserId = Number(userId)
-  if (!Number.isInteger(shiftId) || !Number.isInteger(targetUserId)) {
+  const shiftId = parseDbId(id)
+  const targetUserId = parseDbId(userId)
+  if (shiftId === null || targetUserId === null) {
     return errorResponse(createAppError('INVALID_INPUT', 'Bad shift or user id.'))
   }
 
