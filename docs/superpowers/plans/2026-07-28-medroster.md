@@ -3218,4 +3218,1902 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
+### Task 11: Shift edit — preview and confirm with version guard
+
+**Files:**
+- Create: `lib/rules/edit.ts`
+- Test: `tests/rules/edit.test.ts`
+
+**Interfaces:**
+- Consumes: `validateAssignment` (Task 10), `withOrderedLocks` (Task 10), `emitEvent` (Task 10).
+- Produces:
+  - `interface ProposedShift { startsAt: Date; endsAt: Date; requirements: Record<Profession, number> }`
+  - `interface DroppedClaim { userId: number; name: string; profession: Profession; reason: string; code: RuleCode }`
+  - `interface EditPreview { version: number; kept: number[]; dropped: DroppedClaim[] }`
+  - `previewShiftEdit(db, shiftId, proposed, now?): Promise<EditPreview | AppError>`
+  - `commitShiftEdit(db, shiftId, proposed, expectedVersion, mutationId?, now?): Promise<EditPreview | AppError>`
+  - `previewShiftDelete(db, shiftId)` / `commitShiftDelete(db, shiftId, expectedVersion, mutationId?)`
+
+- [ ] **Step 1: Write the edit test**
+
+Create `tests/rules/edit.test.ts`:
+
+```ts
+import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { assignClaim } from '@/lib/rules/assign'
+import { commitShiftEdit, previewShiftEdit } from '@/lib/rules/edit'
+import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
+
+const D = (s: string) => new Date(s)
+
+async function makeShift(startsAt: Date, endsAt: Date, nurses = 2, doctors = 0) {
+  const db = await getTestDb()
+  return db.shift.create({
+    data: {
+      startsAt, endsAt,
+      requirements: { create: [
+        { profession: 'NURSE', requiredCount: nurses },
+        { profession: 'DOCTOR', requiredCount: doctors },
+        { profession: 'RECEPTIONIST', requiredCount: 0 },
+      ] },
+    },
+  })
+}
+
+async function makeNurse(i: number) {
+  const db = await getTestDb()
+  return db.user.create({
+    data: { email: `n${i}@c.test`, name: `Nurse ${i}`, passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+  })
+}
+
+const REQ = { NURSE: 2, DOCTOR: 0, RECEPTIONIST: 0 } as const
+
+beforeEach(resetTestDb)
+afterAll(stopTestDb)
+
+describe('previewShiftEdit', () => {
+  it('keeps every claim when the new time breaks nothing', async () => {
+    const db = await getTestDb()
+    const shift = await makeShift(D('2026-12-01T09:00Z'), D('2026-12-01T17:00Z'))
+    const nurse = await makeNurse(1)
+    await assignClaim({ db, shiftId: shift.id, userId: nurse.id, actorId: nurse.id })
+
+    const preview = await previewShiftEdit(db, shift.id, {
+      startsAt: D('2026-12-01T10:00Z'), endsAt: D('2026-12-01T18:00Z'), requirements: { ...REQ },
+    })
+
+    expect('dropped' in preview && preview.dropped).toEqual([])
+    expect('kept' in preview && preview.kept).toEqual([nurse.id])
+  })
+
+  it('drops the claim that the new time makes overlap another shift', async () => {
+    const db = await getTestDb()
+    const a = await makeShift(D('2026-12-01T09:00Z'), D('2026-12-01T17:00Z'))
+    const b = await makeShift(D('2026-12-02T09:00Z'), D('2026-12-02T17:00Z'))
+    const nurse = await makeNurse(1)
+    await assignClaim({ db, shiftId: a.id, userId: nurse.id, actorId: nurse.id })
+    await assignClaim({ db, shiftId: b.id, userId: nurse.id, actorId: nurse.id })
+
+    // Move b on top of a
+    const preview = await previewShiftEdit(db, b.id, {
+      startsAt: D('2026-12-01T10:00Z'), endsAt: D('2026-12-01T18:00Z'), requirements: { ...REQ },
+    })
+
+    expect('dropped' in preview && preview.dropped).toHaveLength(1)
+    expect('dropped' in preview && preview.dropped[0]!.code).toBe('OVERLAP')
+  })
+
+  it('drops the most recently claimed person when the requirement is lowered', async () => {
+    const db = await getTestDb()
+    const shift = await makeShift(D('2026-12-01T09:00Z'), D('2026-12-01T17:00Z'), 2)
+    const first = await makeNurse(1)
+    const second = await makeNurse(2)
+    await assignClaim({ db, shiftId: shift.id, userId: first.id, actorId: first.id })
+    await assignClaim({ db, shiftId: shift.id, userId: second.id, actorId: second.id })
+
+    const preview = await previewShiftEdit(db, shift.id, {
+      startsAt: shift.startsAt, endsAt: shift.endsAt,
+      requirements: { NURSE: 1, DOCTOR: 0, RECEPTIONIST: 0 },
+    })
+
+    expect('dropped' in preview && preview.dropped.map((d) => d.userId)).toEqual([second.id])
+    expect('kept' in preview && preview.kept).toEqual([first.id])
+  })
+
+  it('changes nothing in the database', async () => {
+    const db = await getTestDb()
+    const shift = await makeShift(D('2026-12-01T09:00Z'), D('2026-12-01T17:00Z'))
+    const nurse = await makeNurse(1)
+    await assignClaim({ db, shiftId: shift.id, userId: nurse.id, actorId: nurse.id })
+
+    await previewShiftEdit(db, shift.id, {
+      startsAt: shift.startsAt, endsAt: shift.endsAt,
+      requirements: { NURSE: 0, DOCTOR: 0, RECEPTIONIST: 1 },
+    })
+
+    expect(await db.claim.count({ where: { shiftId: shift.id } })).toBe(1)
+    expect((await db.shift.findUnique({ where: { id: shift.id } }))!.version).toBe(0)
+  })
+})
+
+describe('commitShiftEdit', () => {
+  it('applies the edit, drops the right claims and bumps the version', async () => {
+    const db = await getTestDb()
+    const shift = await makeShift(D('2026-12-01T09:00Z'), D('2026-12-01T17:00Z'), 2)
+    const first = await makeNurse(1)
+    const second = await makeNurse(2)
+    await assignClaim({ db, shiftId: shift.id, userId: first.id, actorId: first.id })
+    await assignClaim({ db, shiftId: shift.id, userId: second.id, actorId: second.id })
+
+    const result = await commitShiftEdit(db, shift.id, {
+      startsAt: shift.startsAt, endsAt: shift.endsAt,
+      requirements: { NURSE: 1, DOCTOR: 0, RECEPTIONIST: 0 },
+    }, 0)
+
+    expect('dropped' in result && result.dropped).toHaveLength(1)
+    expect(await db.claim.count({ where: { shiftId: shift.id } })).toBe(1)
+    expect((await db.shift.findUnique({ where: { id: shift.id } }))!.version).toBe(1)
+  })
+
+  it('refuses a stale confirm when a claim landed after the preview', async () => {
+    const db = await getTestDb()
+    const shift = await makeShift(D('2026-12-01T09:00Z'), D('2026-12-01T17:00Z'), 2)
+    const first = await makeNurse(1)
+    await assignClaim({ db, shiftId: shift.id, userId: first.id, actorId: first.id })
+
+    const preview = await previewShiftEdit(db, shift.id, {
+      startsAt: shift.startsAt, endsAt: shift.endsAt, requirements: { ...REQ },
+    })
+    const stale = ('version' in preview ? preview.version : 0)
+
+    // A concurrent edit bumps the version between preview and confirm.
+    await commitShiftEdit(db, shift.id, {
+      startsAt: shift.startsAt, endsAt: shift.endsAt, requirements: { ...REQ },
+    }, stale)
+
+    const result = await commitShiftEdit(db, shift.id, {
+      startsAt: shift.startsAt, endsAt: shift.endsAt,
+      requirements: { NURSE: 0, DOCTOR: 0, RECEPTIONIST: 1 },
+    }, stale)
+
+    expect('code' in result && result.code).toBe('VERSION_CONFLICT')
+    expect(await db.claim.count({ where: { shiftId: shift.id } })).toBe(1)
+  })
+
+  it('emits a claims_dropped event only when somebody was actually dropped', async () => {
+    const db = await getTestDb()
+    const shift = await makeShift(D('2026-12-01T09:00Z'), D('2026-12-01T17:00Z'), 1)
+    const nurse = await makeNurse(1)
+    await assignClaim({ db, shiftId: shift.id, userId: nurse.id, actorId: nurse.id })
+
+    await commitShiftEdit(db, shift.id, {
+      startsAt: D('2026-12-01T10:00Z'), endsAt: D('2026-12-01T18:00Z'), requirements: { NURSE: 1, DOCTOR: 0, RECEPTIONIST: 0 },
+    }, 0)
+    expect(await db.eventOutbox.count({ where: { type: 'shift.claims_dropped' } })).toBe(0)
+
+    await commitShiftEdit(db, shift.id, {
+      startsAt: D('2026-12-01T10:00Z'), endsAt: D('2026-12-01T18:00Z'),
+      requirements: { NURSE: 0, DOCTOR: 1, RECEPTIONIST: 0 },
+    }, 1)
+    expect(await db.eventOutbox.count({ where: { type: 'shift.claims_dropped' } })).toBe(1)
+  })
+})
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npm test -- tests/rules/edit.test.ts`
+Expected: FAIL — `@/lib/rules/edit` not found.
+
+- [ ] **Step 3: Implement `edit.ts`**
+
+Create `lib/rules/edit.ts`:
+
+```ts
+import type { PrismaClient, Prisma, Profession } from '@prisma/client'
+import { createAppError, type AppError, type RuleCode } from '@/lib/domain/errors'
+import { emitEvent } from '@/lib/events/outbox'
+import { weekTopic } from '@/lib/events/topics'
+import { withOrderedLocks } from './locks'
+import { validateAssignment } from './validate'
+
+export interface ProposedShift {
+  startsAt: Date
+  endsAt: Date
+  requirements: Record<Profession, number>
+}
+
+export interface DroppedClaim {
+  userId: number
+  name: string
+  profession: Profession
+  code: RuleCode
+  reason: string
+}
+
+export interface EditPreview {
+  version: number
+  kept: number[]
+  dropped: DroppedClaim[]
+}
+
+const ZERO: Record<Profession, number> = { DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 }
+
+/**
+ * Re-runs the claim validator against the PROPOSED shift state and decides who
+ * survives (§4.3). Shared verbatim by preview and commit — the preview is the
+ * commit in dry-run mode, so the two can never disagree about who gets dropped.
+ *
+ * Claims are considered oldest-first, so when a requirement is lowered the most
+ * recently made commitments are the ones dropped.
+ */
+async function computeSurvivors(
+  tx: Prisma.TransactionClient,
+  shiftId: number,
+  proposed: ProposedShift,
+  now: Date,
+): Promise<EditPreview> {
+  const shift = await tx.shift.findUniqueOrThrow({ where: { id: shiftId } })
+
+  const claims = await tx.claim.findMany({
+    where: { shiftId },
+    orderBy: { createdAt: 'asc' },
+    include: { user: { select: { id: true, name: true, profession: true } } },
+  })
+
+  const requirements = (Object.keys(proposed.requirements) as Profession[])
+    .map((profession) => ({ profession, requiredCount: proposed.requirements[profession] }))
+
+  const proposedShift = { id: shiftId, startsAt: proposed.startsAt, endsAt: proposed.endsAt, requirements }
+
+  const running = { ...ZERO }
+  const kept: number[] = []
+  const dropped: DroppedClaim[] = []
+
+  for (const claim of claims) {
+    // The holder's OTHER shifts, so a retimed shift can be detected as overlapping.
+    const others = await tx.claim.findMany({
+      where: { userId: claim.userId, shiftId: { not: shiftId } },
+      select: { shift: { select: { startsAt: true, endsAt: true } } },
+    })
+
+    const failure = validateAssignment(
+      proposedShift,
+      { id: claim.userId, profession: claim.user.profession },
+      { claimsByProfession: running, userOtherShifts: others.map((o) => o.shift) },
+      now,
+    )
+
+    if (failure) {
+      dropped.push({
+        userId: claim.userId,
+        name: claim.user.name,
+        profession: claim.user.profession!,
+        code: failure.code,
+        reason: failure.message,
+      })
+    } else {
+      kept.push(claim.userId)
+      if (claim.user.profession) running[claim.user.profession] += 1
+    }
+  }
+
+  return { version: shift.version, kept, dropped }
+}
+
+export async function previewShiftEdit(
+  db: PrismaClient,
+  shiftId: number,
+  proposed: ProposedShift,
+  now: Date = new Date(),
+): Promise<EditPreview | AppError> {
+  const exists = await db.shift.findUnique({ where: { id: shiftId }, select: { id: true } })
+  if (!exists) return createAppError('NOT_FOUND', 'That shift no longer exists.')
+
+  // Read-only: runs in a transaction for a consistent snapshot but writes nothing.
+  return db.$transaction((tx) => computeSurvivors(tx, shiftId, proposed, now))
+}
+
+export async function commitShiftEdit(
+  db: PrismaClient,
+  shiftId: number,
+  proposed: ProposedShift,
+  expectedVersion: number,
+  mutationId?: string,
+  now: Date = new Date(),
+): Promise<EditPreview | AppError> {
+  return db.$transaction(async (tx) => {
+    const claimants = await tx.claim.findMany({ where: { shiftId }, select: { userId: true } })
+
+    return withOrderedLocks(
+      tx,
+      { shiftIds: [shiftId], userIds: claimants.map((c) => c.userId) },
+      async () => {
+        const shift = await tx.shift.findUnique({ where: { id: shiftId } })
+        if (!shift) return createAppError('NOT_FOUND', 'That shift no longer exists.')
+
+        // A claim landing between preview and confirm bumps nothing, so the
+        // guard is on the shift version AND a re-computation under lock: the
+        // caller is shown the fresh result rather than having a stale plan applied.
+        if (shift.version !== expectedVersion) {
+          return createAppError('VERSION_CONFLICT',
+            'This shift changed while you were reviewing. Re-check the preview and try again.',
+            { currentVersion: shift.version })
+        }
+
+        const outcome = await computeSurvivors(tx, shiftId, proposed, now)
+
+        if (outcome.dropped.length > 0) {
+          await tx.claim.deleteMany({
+            where: { shiftId, userId: { in: outcome.dropped.map((d) => d.userId) } },
+          })
+        }
+
+        const oldStartsAt = shift.startsAt
+
+        await tx.shift.update({
+          where: { id: shiftId },
+          data: { startsAt: proposed.startsAt, endsAt: proposed.endsAt, version: { increment: 1 } },
+        })
+
+        for (const profession of Object.keys(proposed.requirements) as Profession[]) {
+          await tx.shiftRequirement.upsert({
+            where: { shiftId_profession: { shiftId, profession } },
+            create: { shiftId, profession, requiredCount: proposed.requirements[profession] },
+            update: { requiredCount: proposed.requirements[profession] },
+          })
+        }
+
+        // Both weeks are notified when a shift moves across a week boundary.
+        const topics = new Set([weekTopic(oldStartsAt), weekTopic(proposed.startsAt)])
+        for (const topic of topics) {
+          await emitEvent(tx, {
+            topic, type: 'shift.edited',
+            payload: { shiftId, startsAt: proposed.startsAt.toISOString(), endsAt: proposed.endsAt.toISOString() },
+            mutationId,
+          })
+          if (outcome.dropped.length > 0) {
+            await emitEvent(tx, {
+              topic, type: 'shift.claims_dropped',
+              payload: { shiftId, dropped: outcome.dropped },
+              mutationId,
+            })
+          }
+        }
+
+        return { ...outcome, version: shift.version + 1 }
+      },
+    )
+  })
+}
+
+export async function previewShiftDelete(
+  db: PrismaClient,
+  shiftId: number,
+): Promise<{ version: number; holders: DroppedClaim[] } | AppError> {
+  const shift = await db.shift.findUnique({
+    where: { id: shiftId },
+    include: { claims: { include: { user: { select: { id: true, name: true, profession: true } } } } },
+  })
+  if (!shift) return createAppError('NOT_FOUND', 'That shift no longer exists.')
+
+  return {
+    version: shift.version,
+    holders: shift.claims.map((c) => ({
+      userId: c.userId, name: c.user.name, profession: c.user.profession!,
+      code: 'NOT_CLAIMED' as const, reason: 'Shift is being deleted.',
+    })),
+  }
+}
+
+export async function commitShiftDelete(
+  db: PrismaClient,
+  shiftId: number,
+  expectedVersion: number,
+  mutationId?: string,
+): Promise<{ ok: true } | AppError> {
+  return db.$transaction(async (tx) => {
+    const claimants = await tx.claim.findMany({ where: { shiftId }, select: { userId: true } })
+
+    return withOrderedLocks(tx, { shiftIds: [shiftId], userIds: claimants.map((c) => c.userId) }, async () => {
+      const shift = await tx.shift.findUnique({ where: { id: shiftId } })
+      if (!shift) return createAppError('NOT_FOUND', 'That shift no longer exists.')
+      if (shift.version !== expectedVersion) {
+        return createAppError('VERSION_CONFLICT',
+          'This shift changed while you were reviewing. Re-check and try again.')
+      }
+
+      await emitEvent(tx, {
+        topic: weekTopic(shift.startsAt),
+        type: 'shift.deleted',
+        payload: { shiftId, affectedUserIds: claimants.map((c) => c.userId) },
+        mutationId,
+      })
+
+      await tx.shift.delete({ where: { id: shiftId } }) // claims cascade
+
+      return { ok: true as const }
+    })
+  })
+}
+```
+
+- [ ] **Step 4: Run it to verify it passes**
+
+Run: `npm test -- tests/rules/edit.test.ts`
+Expected: PASS, 7 tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/rules/edit.ts tests/rules/edit.test.ts
+git commit -m "feat: re-validate claims on shift edit with preview and version guard
+
+Preview and commit share computeSurvivors verbatim, so what the manager is
+shown is exactly what gets applied. The commit re-computes under lock and
+refuses a stale version, so a claim landing mid-review cannot slip through
+unvalidated.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 12: Contracts, pagination and the shift/claim API routes
+
+**Files:**
+- Create: `lib/contracts/common.ts`, `lib/contracts/shifts.ts`, `lib/contracts/claims.ts`, `lib/db/paginate.ts`, `app/api/shifts/route.ts`, `app/api/shifts/[id]/route.ts`, `app/api/shifts/[id]/claims/route.ts`, `app/api/shifts/[id]/claims/[userId]/route.ts`, `app/api/staff/route.ts`
+- Test: `tests/contracts/paginate.test.ts`, `tests/api/claims.test.ts`
+
+**Interfaces:**
+- Consumes: `withAuth`, `errorResponse` (Task 9); `assignClaim`, `unassignClaim` (Task 10); `previewShiftEdit`, `commitShiftEdit`, `previewShiftDelete`, `commitShiftDelete` (Task 11).
+- Produces:
+  - `encodeCursor(v) / decodeCursor(s)`
+  - `paginate<T>(args): Promise<{ items: T[]; nextCursor: string | null }>`
+  - `CreateShiftBody`, `UpdateShiftBody`, `CreateClaimBody` Zod schemas + inferred types
+  - Route handlers per §6.5
+
+- [ ] **Step 1: Write the pagination test**
+
+Create `tests/contracts/paginate.test.ts`:
+
+```ts
+import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { decodeCursor, encodeCursor, paginate } from '@/lib/db/paginate'
+import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
+
+beforeEach(resetTestDb)
+afterAll(stopTestDb)
+
+describe('cursors', () => {
+  it('round-trips an id', () => {
+    expect(decodeCursor(encodeCursor(42))).toBe(42)
+  })
+
+  it('returns null for a malformed cursor rather than throwing', () => {
+    expect(decodeCursor('not-a-cursor')).toBeNull()
+  })
+})
+
+describe('paginate', () => {
+  async function seed(n: number) {
+    const db = await getTestDb()
+    for (let i = 0; i < n; i++) {
+      await db.user.create({
+        data: { email: `u${i}@c.test`, name: `User ${i}`, passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+      })
+    }
+    return db
+  }
+
+  it('walks every row exactly once across pages', async () => {
+    const db = await seed(25)
+    const seen: number[] = []
+    let cursor: string | null = null
+
+    do {
+      const page = await paginate({
+        findMany: (args) => db.user.findMany(args), limit: 10, cursor,
+      })
+      seen.push(...page.items.map((u) => u.id))
+      cursor = page.nextCursor
+    } while (cursor)
+
+    expect(seen).toHaveLength(25)
+    expect(new Set(seen).size).toBe(25)
+  })
+
+  it('reports no next cursor on the final page', async () => {
+    const db = await seed(5)
+    const page = await paginate({ findMany: (args) => db.user.findMany(args), limit: 10, cursor: null })
+    expect(page.items).toHaveLength(5)
+    expect(page.nextCursor).toBeNull()
+  })
+
+  it('does not skip a row when an earlier row is deleted mid-scroll', async () => {
+    // The failure mode that offset pagination has and keyset does not.
+    const db = await seed(20)
+    const first = await paginate({ findMany: (args) => db.user.findMany(args), limit: 10, cursor: null })
+    await db.user.delete({ where: { id: first.items[0]!.id } })
+    const second = await paginate({ findMany: (args) => db.user.findMany(args), limit: 10, cursor: first.nextCursor })
+
+    const ids = [...first.items.map((u) => u.id), ...second.items.map((u) => u.id)]
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(second.items).toHaveLength(10)
+  })
+})
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npm test -- tests/contracts/paginate.test.ts`
+Expected: FAIL — `@/lib/db/paginate` not found.
+
+- [ ] **Step 3: Implement `paginate.ts`**
+
+Create `lib/db/paginate.ts`:
+
+```ts
+export function encodeCursor(id: number): string {
+  return Buffer.from(`id:${id}`, 'utf8').toString('base64url')
+}
+
+export function decodeCursor(cursor: string): number | null {
+  try {
+    const raw = Buffer.from(cursor, 'base64url').toString('utf8')
+    const m = /^id:(\d+)$/.exec(raw)
+    return m ? Number(m[1]) : null
+  } catch {
+    return null
+  }
+}
+
+interface FindManyArgs {
+  take: number
+  skip?: number
+  cursor?: { id: number }
+  orderBy: { id: 'asc' }
+}
+
+export interface PaginateArgs<T> {
+  findMany: (args: FindManyArgs) => Promise<T[]>
+  limit: number
+  cursor: string | null
+}
+
+export interface Page<T> {
+  items: T[]
+  nextCursor: string | null
+}
+
+/**
+ * Keyset pagination (§6.4). Anchoring on the last row's id rather than an
+ * offset means rows inserted or deleted earlier in the list cannot make a
+ * later page skip or repeat entries — which matters here because shifts and
+ * claims change under a scrolling list in real time.
+ */
+export async function paginate<T extends { id: number }>(
+  args: PaginateArgs<T>,
+): Promise<Page<T>> {
+  const limit = Math.min(Math.max(args.limit, 1), 100)
+  const after = args.cursor ? decodeCursor(args.cursor) : null
+
+  const rows = await args.findMany({
+    take: limit + 1, // one extra row tells us whether another page exists
+    orderBy: { id: 'asc' },
+    ...(after !== null ? { cursor: { id: after }, skip: 1 } : {}),
+  })
+
+  const items = rows.slice(0, limit)
+  const nextCursor = rows.length > limit && items.length > 0
+    ? encodeCursor(items[items.length - 1]!.id)
+    : null
+
+  return { items, nextCursor }
+}
+```
+
+- [ ] **Step 4: Implement the contracts**
+
+Create `lib/contracts/common.ts`:
+
+```ts
+import { z } from 'zod'
+
+export const PROFESSION = z.enum(['DOCTOR', 'NURSE', 'RECEPTIONIST'])
+
+export const requirementsSchema = z.object({
+  DOCTOR: z.number().int().min(0).max(50),
+  NURSE: z.number().int().min(0).max(50),
+  RECEPTIONIST: z.number().int().min(0).max(50),
+}).refine((r) => r.DOCTOR + r.NURSE + r.RECEPTIONIST > 0, {
+  message: 'A shift must require at least one person.',
+})
+
+export const pageQuerySchema = z.object({
+  cursor: z.string().nullable().default(null),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+})
+
+export const errorSchema = z.object({
+  error: z.object({
+    code: z.string(),
+    message: z.string(),
+    meta: z.record(z.unknown()).optional(),
+  }),
+})
+
+/** Client-generated id used to suppress a caller's own realtime echo (§7.1). */
+export const mutationIdSchema = z.string().min(8).max(64).optional()
+
+export type Requirements = z.infer<typeof requirementsSchema>
+```
+
+Create `lib/contracts/shifts.ts`:
+
+```ts
+import { z } from 'zod'
+import { mutationIdSchema, requirementsSchema } from './common'
+
+/** Clinic-local wall clock, exactly as a manager types it. */
+export const localDateTimeSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD.'),
+  startTime: z.string().regex(/^\d{2}:\d{2}$/, 'Use HH:MM.'),
+  endTime: z.string().regex(/^\d{2}:\d{2}$/, 'Use HH:MM.'),
+})
+
+export const createShiftSchema = localDateTimeSchema.extend({
+  requirements: requirementsSchema,
+  mutationId: mutationIdSchema,
+  recurrence: z.object({
+    weekdays: z.array(z.number().int().min(0).max(6)).min(1),
+    untilDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  }).optional(),
+})
+
+export const updateShiftSchema = localDateTimeSchema.extend({
+  requirements: requirementsSchema,
+  expectedVersion: z.number().int().min(0),
+  mutationId: mutationIdSchema,
+})
+
+export const droppedClaimSchema = z.object({
+  userId: z.number().int(),
+  name: z.string(),
+  profession: z.enum(['DOCTOR', 'NURSE', 'RECEPTIONIST']),
+  code: z.string(),
+  reason: z.string(),
+})
+
+export const editPreviewSchema = z.object({
+  version: z.number().int(),
+  kept: z.array(z.number().int()),
+  dropped: z.array(droppedClaimSchema),
+})
+
+export type CreateShiftBody = z.infer<typeof createShiftSchema>
+export type UpdateShiftBody = z.infer<typeof updateShiftSchema>
+export type EditPreviewResponse = z.infer<typeof editPreviewSchema>
+```
+
+Create `lib/contracts/claims.ts`:
+
+```ts
+import { z } from 'zod'
+import { mutationIdSchema } from './common'
+
+export const createClaimSchema = z.object({
+  /** Omitted means "claim for myself"; managers may name another user. */
+  userId: z.number().int().positive().optional(),
+  mutationId: mutationIdSchema,
+})
+
+export const claimResultSchema = z.object({ claimId: z.number().int() })
+
+export type CreateClaimBody = z.infer<typeof createClaimSchema>
+```
+
+- [ ] **Step 5: Write the claims API test**
+
+Create `tests/api/claims.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { createClaimSchema } from '@/lib/contracts/claims'
+import { updateShiftSchema } from '@/lib/contracts/shifts'
+import { requirementsSchema } from '@/lib/contracts/common'
+
+describe('claim contract', () => {
+  it('accepts an empty body as a self-claim', () => {
+    expect(createClaimSchema.parse({})).toEqual({})
+  })
+
+  it('accepts a target user for a manager assignment', () => {
+    expect(createClaimSchema.parse({ userId: 7 }).userId).toBe(7)
+  })
+
+  it('rejects a non-positive user id', () => {
+    expect(createClaimSchema.safeParse({ userId: 0 }).success).toBe(false)
+  })
+})
+
+describe('requirements contract', () => {
+  it('rejects a shift that needs nobody', () => {
+    expect(requirementsSchema.safeParse({ DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 }).success).toBe(false)
+  })
+
+  it('rejects a negative count', () => {
+    expect(requirementsSchema.safeParse({ DOCTOR: -1, NURSE: 1, RECEPTIONIST: 0 }).success).toBe(false)
+  })
+})
+
+describe('update contract', () => {
+  it('requires the version the client previewed against', () => {
+    const body = {
+      date: '2026-08-12', startTime: '08:00', endTime: '16:00',
+      requirements: { DOCTOR: 1, NURSE: 2, RECEPTIONIST: 0 },
+    }
+    expect(updateShiftSchema.safeParse(body).success).toBe(false)
+    expect(updateShiftSchema.safeParse({ ...body, expectedVersion: 0 }).success).toBe(true)
+  })
+})
+```
+
+- [ ] **Step 6: Implement the route handlers**
+
+Create `app/api/shifts/[id]/claims/route.ts`:
+
+```ts
+import { NextResponse } from 'next/server'
+import { prisma } from '@/lib/db/client'
+import { withAuth, errorResponse } from '@/lib/auth/with-auth'
+import { can, scopedPermission } from '@/lib/auth/permissions'
+import { createClaimSchema } from '@/lib/contracts/claims'
+import { createAppError } from '@/lib/domain/errors'
+import { assignClaim } from '@/lib/rules/assign'
+
+export const POST = withAuth<{ id: string }>('claim:create:self', async (req, ctx) => {
+  const { id } = await ctx.params
+  const shiftId = Number(id)
+  if (!Number.isInteger(shiftId)) {
+    return errorResponse(createAppError('INVALID_INPUT', 'Bad shift id.'))
+  }
+
+  const parsed = createClaimSchema.safeParse(await req.json().catch(() => ({})))
+  if (!parsed.success) {
+    return errorResponse(createAppError('INVALID_INPUT', parsed.error.issues[0]!.message))
+  }
+
+  const targetUserId = parsed.data.userId ?? ctx.principal.id
+
+  // Claiming for somebody else is a strictly stronger permission than for self.
+  const required = scopedPermission(ctx.principal, 'claim:create', targetUserId)
+  if (!can(ctx.principal, required)) {
+    return errorResponse(createAppError('FORBIDDEN', 'You can only claim shifts for yourself.'))
+  }
+
+  const result = await assignClaim({
+    db: prisma, shiftId, userId: targetUserId,
+    actorId: ctx.principal.id, mutationId: parsed.data.mutationId,
+  })
+
+  if ('code' in result) return errorResponse(result)
+  return NextResponse.json(result, { status: 201 })
+})
+```
+
+Create `app/api/shifts/[id]/claims/[userId]/route.ts`:
+
+```ts
+import { NextResponse } from 'next/server'
+import { prisma } from '@/lib/db/client'
+import { withAuth, errorResponse } from '@/lib/auth/with-auth'
+import { can, scopedPermission } from '@/lib/auth/permissions'
+import { createAppError } from '@/lib/domain/errors'
+import { unassignClaim } from '@/lib/rules/assign'
+
+export const DELETE = withAuth<{ id: string; userId: string }>('claim:delete:self', async (req, ctx) => {
+  const { id, userId } = await ctx.params
+  const shiftId = Number(id)
+  const targetUserId = Number(userId)
+  if (!Number.isInteger(shiftId) || !Number.isInteger(targetUserId)) {
+    return errorResponse(createAppError('INVALID_INPUT', 'Bad shift or user id.'))
+  }
+
+  const required = scopedPermission(ctx.principal, 'claim:delete', targetUserId)
+  if (!can(ctx.principal, required)) {
+    return errorResponse(createAppError('FORBIDDEN', 'You can only release your own shifts.'))
+  }
+
+  const mutationId = new URL(req.url).searchParams.get('mutationId') ?? undefined
+  const result = await unassignClaim({ db: prisma, shiftId, userId: targetUserId, mutationId })
+
+  if ('code' in result) return errorResponse(result)
+  return NextResponse.json(result)
+})
+```
+
+Create `app/api/shifts/[id]/route.ts`:
+
+```ts
+import { NextResponse } from 'next/server'
+import { prisma } from '@/lib/db/client'
+import { withAuth, errorResponse } from '@/lib/auth/with-auth'
+import { updateShiftSchema } from '@/lib/contracts/shifts'
+import { createAppError } from '@/lib/domain/errors'
+import { clinicWallTimeToUtc } from '@/lib/domain/time'
+import {
+  commitShiftDelete, commitShiftEdit, previewShiftDelete, previewShiftEdit,
+} from '@/lib/rules/edit'
+
+const parseId = (raw: string) => (Number.isInteger(Number(raw)) ? Number(raw) : null)
+
+/** Rolls an end at or before the start onto the next day — same rule as the importer (§5.3). */
+function toInstants(date: string, startTime: string, endTime: string) {
+  const startsAt = clinicWallTimeToUtc(date, startTime)
+  let endsAt = clinicWallTimeToUtc(date, endTime)
+  if (endsAt <= startsAt) {
+    const [y, m, d] = date.split('-').map(Number)
+    const next = new Date(Date.UTC(y!, m! - 1, d! + 1))
+    endsAt = clinicWallTimeToUtc(next.toISOString().slice(0, 10), endTime)
+  }
+  return { startsAt, endsAt }
+}
+
+export const GET = withAuth<{ id: string }>('shift:read', async (_req, ctx) => {
+  const shiftId = parseId((await ctx.params).id)
+  if (shiftId === null) return errorResponse(createAppError('INVALID_INPUT', 'Bad shift id.'))
+
+  const shift = await prisma.shift.findUnique({
+    where: { id: shiftId },
+    include: {
+      requirements: true,
+      claims: { include: { user: { select: { id: true, name: true, profession: true } } } },
+    },
+  })
+  if (!shift) return errorResponse(createAppError('NOT_FOUND', 'That shift no longer exists.'))
+  return NextResponse.json(shift)
+})
+
+export const PATCH = withAuth<{ id: string }>('shift:update', async (req, ctx) => {
+  const shiftId = parseId((await ctx.params).id)
+  if (shiftId === null) return errorResponse(createAppError('INVALID_INPUT', 'Bad shift id.'))
+
+  const parsed = updateShiftSchema.safeParse(await req.json().catch(() => null))
+  if (!parsed.success) {
+    return errorResponse(createAppError('INVALID_INPUT', parsed.error.issues[0]!.message))
+  }
+
+  const { date, startTime, endTime, requirements, expectedVersion, mutationId } = parsed.data
+  const proposed = { ...toInstants(date, startTime, endTime), requirements }
+
+  const dryRun = new URL(req.url).searchParams.get('dryRun') === '1'
+  const result = dryRun
+    ? await previewShiftEdit(prisma, shiftId, proposed)
+    : await commitShiftEdit(prisma, shiftId, proposed, expectedVersion, mutationId)
+
+  if ('code' in result) return errorResponse(result)
+  return NextResponse.json(result)
+})
+
+export const DELETE = withAuth<{ id: string }>('shift:delete', async (req, ctx) => {
+  const shiftId = parseId((await ctx.params).id)
+  if (shiftId === null) return errorResponse(createAppError('INVALID_INPUT', 'Bad shift id.'))
+
+  const url = new URL(req.url)
+  if (url.searchParams.get('dryRun') === '1') {
+    const preview = await previewShiftDelete(prisma, shiftId)
+    if ('code' in preview) return errorResponse(preview)
+    return NextResponse.json(preview)
+  }
+
+  const expectedVersion = Number(url.searchParams.get('expectedVersion'))
+  if (!Number.isInteger(expectedVersion)) {
+    return errorResponse(createAppError('INVALID_INPUT', 'expectedVersion is required.'))
+  }
+
+  const result = await commitShiftDelete(
+    prisma, shiftId, expectedVersion,
+    url.searchParams.get('mutationId') ?? undefined,
+  )
+  if ('code' in result) return errorResponse(result)
+  return NextResponse.json(result)
+})
+```
+
+Create `app/api/staff/route.ts`:
+
+```ts
+import { NextResponse } from 'next/server'
+import { prisma } from '@/lib/db/client'
+import { withAuth } from '@/lib/auth/with-auth'
+import { paginate } from '@/lib/db/paginate'
+import { pageQuerySchema } from '@/lib/contracts/common'
+
+export const GET = withAuth('staff:read', async (req) => {
+  const url = new URL(req.url)
+  const { cursor, limit } = pageQuerySchema.parse({
+    cursor: url.searchParams.get('cursor'),
+    limit: url.searchParams.get('limit') ?? undefined,
+  })
+
+  const page = await paginate({
+    limit, cursor,
+    findMany: (args) => prisma.user.findMany({
+      ...args,
+      where: { role: 'STAFF' },
+      select: { id: true, name: true, email: true, profession: true },
+    }),
+  })
+
+  return NextResponse.json(page)
+})
+```
+
+Create `app/api/shifts/route.ts` (create + list):
+
+```ts
+import { NextResponse } from 'next/server'
+import type { Profession } from '@prisma/client'
+import { prisma } from '@/lib/db/client'
+import { withAuth, errorResponse } from '@/lib/auth/with-auth'
+import { paginate } from '@/lib/db/paginate'
+import { pageQuerySchema } from '@/lib/contracts/common'
+import { createShiftSchema } from '@/lib/contracts/shifts'
+import { createAppError } from '@/lib/domain/errors'
+import { clinicWallTimeToUtc } from '@/lib/domain/time'
+import { emitEvent } from '@/lib/events/outbox'
+import { weekTopic } from '@/lib/events/topics'
+
+export const GET = withAuth('shift:read', async (req) => {
+  const url = new URL(req.url)
+  const { cursor, limit } = pageQuerySchema.parse({
+    cursor: url.searchParams.get('cursor'),
+    limit: url.searchParams.get('limit') ?? undefined,
+  })
+
+  const page = await paginate({
+    limit, cursor,
+    findMany: (args) => prisma.shift.findMany({
+      ...args,
+      include: { requirements: true, _count: { select: { claims: true } } },
+    }),
+  })
+
+  return NextResponse.json(page)
+})
+
+/** Expands a recurrence rule into the concrete dates it covers (§9). */
+function occurrenceDates(from: string, weekdays: number[], until: string): string[] {
+  const out: string[] = []
+  const [fy, fm, fd] = from.split('-').map(Number)
+  const cursor = new Date(Date.UTC(fy!, fm! - 1, fd!))
+  const end = new Date(`${until}T00:00:00Z`)
+  const wanted = new Set(weekdays)
+
+  while (cursor <= end && out.length < 366) {
+    if (wanted.has(cursor.getUTCDay())) out.push(cursor.toISOString().slice(0, 10))
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return out
+}
+
+export const POST = withAuth('shift:create', async (req, ctx) => {
+  const parsed = createShiftSchema.safeParse(await req.json().catch(() => null))
+  if (!parsed.success) {
+    return errorResponse(createAppError('INVALID_INPUT', parsed.error.issues[0]!.message))
+  }
+
+  const { date, startTime, endTime, requirements, recurrence, mutationId } = parsed.data
+
+  const dates = recurrence
+    ? occurrenceDates(date, recurrence.weekdays, recurrence.untilDate)
+    : [date]
+
+  if (dates.length === 0) {
+    return errorResponse(createAppError('INVALID_INPUT', 'That recurrence covers no dates.'))
+  }
+
+  const created = await prisma.$transaction(async (tx) => {
+    const series = recurrence
+      ? await tx.shiftSeries.create({
+          data: {
+            weekdays: recurrence.weekdays, startTime, endTime,
+            untilDate: new Date(`${recurrence.untilDate}T00:00:00Z`),
+            requirements,
+          },
+        })
+      : null
+
+    const ids: number[] = []
+    for (const d of dates) {
+      const startsAt = clinicWallTimeToUtc(d, startTime)
+      let endsAt = clinicWallTimeToUtc(d, endTime)
+      if (endsAt <= startsAt) {
+        const [y, m, dd] = d.split('-').map(Number)
+        const next = new Date(Date.UTC(y!, m! - 1, dd! + 1))
+        endsAt = clinicWallTimeToUtc(next.toISOString().slice(0, 10), endTime)
+      }
+
+      const shift = await tx.shift.create({
+        data: {
+          startsAt, endsAt, seriesId: series?.id ?? null,
+          requirements: {
+            create: (Object.keys(requirements) as Profession[])
+              .map((profession) => ({ profession, requiredCount: requirements[profession] })),
+          },
+        },
+      })
+      ids.push(shift.id)
+
+      await emitEvent(tx, {
+        topic: weekTopic(startsAt), type: 'shift.created',
+        payload: { shiftId: shift.id, startsAt: startsAt.toISOString() },
+        mutationId,
+      })
+    }
+    return { ids, seriesId: series?.id ?? null }
+  }, { timeout: 30_000 })
+
+  return NextResponse.json(created, { status: 201 })
+})
+```
+
+- [ ] **Step 7: Run the tests to verify they pass**
+
+Run: `npm test -- tests/contracts tests/api tests/rbac`
+Expected: PASS. `tests/rbac/routes.test.ts` now finds route files and asserts each
+exports handlers built by `withAuth`.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add lib/contracts lib/db/paginate.ts app/api tests/contracts tests/api
+git commit -m "feat: add shift and claim API with keyset pagination
+
+Zod schemas are the only definition of each payload; types are inferred from
+them on both sides. Claiming for another user resolves to claim:create:any, so
+a staff member cannot assign anyone but themselves.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 13: Week coverage endpoint with compressed JSON
+
+**Files:**
+- Create: `lib/contracts/week.ts`, `lib/coverage.ts`, `app/api/weeks/[isoWeek]/route.ts`
+- Test: `tests/contracts/week-codec.test.ts`, `tests/api/coverage.test.ts`
+
+**Interfaces:**
+- Consumes: `weekBounds` (Task 3), `withAuth` (Task 9), `paginate` is *not* used here (§6.4).
+- Produces:
+  - `type CoverageStatus = 'FULL' | 'PARTIAL' | 'EMPTY'`
+  - `computeCoverage(requirements, claims): { status: CoverageStatus; missing: Record<Profession, number> }`
+  - `encodeWeek(week: WeekView): CompressedWeek` / `decodeWeek(c: CompressedWeek): WeekView`
+  - `GET /api/weeks/[isoWeek]` returning `CompressedWeek` with an `ETag`
+
+- [ ] **Step 1: Write the codec and coverage test**
+
+Create `tests/contracts/week-codec.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { decodeWeek, encodeWeek, type WeekView } from '@/lib/contracts/week'
+import { computeCoverage } from '@/lib/coverage'
+
+const view: WeekView = {
+  isoWeek: '2026-W33',
+  staff: [
+    { id: 12, name: 'Ivy Bell', profession: 'NURSE' },
+    { id: 3, name: 'Omar Patel', profession: 'DOCTOR' },
+  ],
+  shifts: [
+    {
+      id: 501, version: 2,
+      startsAt: '2026-08-12T07:00:00.000Z', endsAt: '2026-08-12T15:00:00.000Z',
+      requirements: { DOCTOR: 1, NURSE: 3, RECEPTIONIST: 0 },
+      claimantIds: [12, 3],
+    },
+  ],
+}
+
+describe('week codec', () => {
+  it('round-trips a week view unchanged', () => {
+    expect(decodeWeek(encodeWeek(view))).toEqual(view)
+  })
+
+  it('mentions each staff name exactly once no matter how many shifts they hold', () => {
+    const busy: WeekView = {
+      ...view,
+      shifts: Array.from({ length: 20 }, (_, i) => ({ ...view.shifts[0]!, id: 600 + i })),
+    }
+    const json = JSON.stringify(encodeWeek(busy))
+    expect(json.split('Ivy Bell').length - 1).toBe(1)
+  })
+
+  it('is materially smaller than the uncompressed view', () => {
+    const busy: WeekView = {
+      ...view,
+      shifts: Array.from({ length: 35 }, (_, i) => ({ ...view.shifts[0]!, id: 600 + i })),
+    }
+    const compressed = JSON.stringify(encodeWeek(busy)).length
+    const plain = JSON.stringify(busy).length
+    expect(compressed).toBeLessThan(plain * 0.6)
+  })
+})
+
+describe('computeCoverage', () => {
+  const req = { DOCTOR: 1, NURSE: 3, RECEPTIONIST: 0 }
+
+  it('is EMPTY with nobody claimed', () => {
+    const c = computeCoverage(req, { DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 })
+    expect(c.status).toBe('EMPTY')
+    expect(c.missing).toEqual({ DOCTOR: 1, NURSE: 3, RECEPTIONIST: 0 })
+  })
+
+  it('is PARTIAL with some roles filled and names what is missing', () => {
+    const c = computeCoverage(req, { DOCTOR: 1, NURSE: 1, RECEPTIONIST: 0 })
+    expect(c.status).toBe('PARTIAL')
+    expect(c.missing).toEqual({ DOCTOR: 0, NURSE: 2, RECEPTIONIST: 0 })
+  })
+
+  it('is FULL when every requirement is met', () => {
+    const c = computeCoverage(req, { DOCTOR: 1, NURSE: 3, RECEPTIONIST: 0 })
+    expect(c.status).toBe('FULL')
+    expect(c.missing).toEqual({ DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 })
+  })
+
+  it('never reports negative missing counts when over-staffed', () => {
+    const c = computeCoverage(req, { DOCTOR: 2, NURSE: 5, RECEPTIONIST: 0 })
+    expect(c.status).toBe('FULL')
+    expect(c.missing).toEqual({ DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 })
+  })
+})
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npm test -- tests/contracts/week-codec.test.ts`
+Expected: FAIL — modules not found.
+
+- [ ] **Step 3: Implement `coverage.ts`**
+
+Create `lib/coverage.ts`:
+
+```ts
+import type { Profession } from '@prisma/client'
+
+export type CoverageStatus = 'FULL' | 'PARTIAL' | 'EMPTY'
+
+export interface Coverage {
+  status: CoverageStatus
+  /** How many more of each profession the shift still needs. Never negative. */
+  missing: Record<Profession, number>
+}
+
+const PROFESSIONS: Profession[] = ['DOCTOR', 'NURSE', 'RECEPTIONIST']
+
+/**
+ * Single definition of a shift's staffing status, shared by the API, the week
+ * grid and the shift detail page so the three can never disagree (§8.2).
+ */
+export function computeCoverage(
+  requirements: Record<Profession, number>,
+  claims: Record<Profession, number>,
+): Coverage {
+  const missing: Record<Profession, number> = { DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 }
+  let filled = 0
+  let required = 0
+
+  for (const p of PROFESSIONS) {
+    const need = requirements[p]
+    const have = claims[p]
+    missing[p] = Math.max(0, need - have)
+    required += need
+    filled += Math.min(need, have)
+  }
+
+  const status: CoverageStatus =
+    filled === 0 ? 'EMPTY' : filled >= required ? 'FULL' : 'PARTIAL'
+
+  return { status, missing }
+}
+```
+
+- [ ] **Step 4: Implement the week codec**
+
+Create `lib/contracts/week.ts`:
+
+```ts
+import { z } from 'zod'
+import type { Profession } from '@prisma/client'
+
+const PROFESSION_ORDER: Profession[] = ['DOCTOR', 'NURSE', 'RECEPTIONIST']
+
+export interface WeekStaff { id: number; name: string; profession: Profession }
+
+export interface WeekShift {
+  id: number
+  version: number
+  startsAt: string
+  endsAt: string
+  requirements: Record<Profession, number>
+  claimantIds: number[]
+}
+
+export interface WeekView {
+  isoWeek: string
+  staff: WeekStaff[]
+  shifts: WeekShift[]
+}
+
+/**
+ * Wire format (§6.2). Staff and profession names appear once per response
+ * instead of once per claim, and shifts become positional tuples.
+ *
+ *   s: [[id, name, professionIndex], …]
+ *   h: [[id, version, startsAt, endsAt, [dr, nu, re], [staffIndex, …]], …]
+ *
+ * The payload is not readable raw in devtools, which is why the encoder and
+ * decoder live together here and are round-trip tested. No other endpoint uses
+ * this encoding.
+ */
+export interface CompressedWeek {
+  w: string
+  p: Profession[]
+  s: [number, string, number][]
+  h: [number, number, string, string, [number, number, number], number[]][]
+}
+
+export function encodeWeek(view: WeekView): CompressedWeek {
+  const staffIndex = new Map<number, number>()
+  const s = view.staff.map((member, i) => {
+    staffIndex.set(member.id, i)
+    return [member.id, member.name, PROFESSION_ORDER.indexOf(member.profession)] as
+      [number, string, number]
+  })
+
+  const h = view.shifts.map((shift) => [
+    shift.id,
+    shift.version,
+    shift.startsAt,
+    shift.endsAt,
+    [shift.requirements.DOCTOR, shift.requirements.NURSE, shift.requirements.RECEPTIONIST] as
+      [number, number, number],
+    shift.claimantIds.map((id) => staffIndex.get(id) ?? -1).filter((i) => i >= 0),
+  ] as CompressedWeek['h'][number])
+
+  return { w: view.isoWeek, p: PROFESSION_ORDER, s, h }
+}
+
+export function decodeWeek(c: CompressedWeek): WeekView {
+  const staff: WeekStaff[] = c.s.map(([id, name, p]) => ({
+    id, name, profession: c.p[p]!,
+  }))
+
+  const shifts: WeekShift[] = c.h.map(([id, version, startsAt, endsAt, req, claimants]) => ({
+    id, version, startsAt, endsAt,
+    requirements: { DOCTOR: req[0], NURSE: req[1], RECEPTIONIST: req[2] },
+    claimantIds: claimants.map((i) => staff[i]!.id),
+  }))
+
+  return { isoWeek: c.w, staff, shifts }
+}
+
+export const isoWeekParamSchema = z.string().regex(/^\d{4}-W\d{2}$/, 'Use YYYY-Www.')
+```
+
+- [ ] **Step 5: Implement the week route**
+
+Create `app/api/weeks/[isoWeek]/route.ts`:
+
+```ts
+import { NextResponse } from 'next/server'
+import { createHash } from 'node:crypto'
+import { prisma } from '@/lib/db/client'
+import { withAuth, errorResponse } from '@/lib/auth/with-auth'
+import { createAppError } from '@/lib/domain/errors'
+import { weekBounds } from '@/lib/domain/time'
+import { encodeWeek, isoWeekParamSchema, type WeekShift, type WeekStaff } from '@/lib/contracts/week'
+
+/**
+ * A week is already a bounded window, so this endpoint is deliberately NOT
+ * paginated (§6.4). It returns the compressed encoding plus an ETag, so
+ * flipping back to an already-seen week costs a 304.
+ */
+export const GET = withAuth<{ isoWeek: string }>('shift:read', async (req, ctx) => {
+  const { isoWeek } = await ctx.params
+  const parsed = isoWeekParamSchema.safeParse(isoWeek)
+  if (!parsed.success) {
+    return errorResponse(createAppError('INVALID_INPUT', 'Week must look like 2026-W33.'))
+  }
+
+  const { start, end } = weekBounds(parsed.data)
+
+  const rows = await prisma.shift.findMany({
+    where: { startsAt: { gte: start, lt: end } },
+    orderBy: { startsAt: 'asc' },
+    include: {
+      requirements: true,
+      claims: { include: { user: { select: { id: true, name: true, profession: true } } } },
+    },
+  })
+
+  const staffById = new Map<number, WeekStaff>()
+  const shifts: WeekShift[] = rows.map((shift) => {
+    const requirements = { DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 }
+    for (const r of shift.requirements) requirements[r.profession] = r.requiredCount
+
+    const claimantIds: number[] = []
+    for (const claim of shift.claims) {
+      if (!claim.user.profession) continue
+      staffById.set(claim.user.id, {
+        id: claim.user.id, name: claim.user.name, profession: claim.user.profession,
+      })
+      claimantIds.push(claim.user.id)
+    }
+
+    return {
+      id: shift.id, version: shift.version,
+      startsAt: shift.startsAt.toISOString(), endsAt: shift.endsAt.toISOString(),
+      requirements, claimantIds,
+    }
+  })
+
+  const body = encodeWeek({ isoWeek: parsed.data, staff: [...staffById.values()], shifts })
+  const payload = JSON.stringify(body)
+  const etag = `W/"${createHash('sha1').update(payload).digest('base64url')}"`
+
+  if (req.headers.get('if-none-match') === etag) {
+    return new Response(null, { status: 304, headers: { ETag: etag } })
+  }
+
+  return new NextResponse(payload, {
+    status: 200,
+    headers: { 'Content-Type': 'application/json', ETag: etag, 'Cache-Control': 'private, no-cache' },
+  })
+})
+```
+
+- [ ] **Step 6: Write the coverage integration test**
+
+Create `tests/api/coverage.test.ts`:
+
+```ts
+import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { decodeWeek, encodeWeek, type WeekView } from '@/lib/contracts/week'
+import { computeCoverage } from '@/lib/coverage'
+import { assignClaim } from '@/lib/rules/assign'
+import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
+
+beforeEach(resetTestDb)
+afterAll(stopTestDb)
+
+describe('week coverage over real data', () => {
+  it('reports which roles are still missing after a partial claim', async () => {
+    const db = await getTestDb()
+    const shift = await db.shift.create({
+      data: {
+        startsAt: new Date('2026-12-01T09:00Z'), endsAt: new Date('2026-12-01T17:00Z'),
+        requirements: { create: [
+          { profession: 'NURSE', requiredCount: 2 },
+          { profession: 'DOCTOR', requiredCount: 1 },
+          { profession: 'RECEPTIONIST', requiredCount: 0 },
+        ] },
+      },
+    })
+    const nurse = await db.user.create({
+      data: { email: 'n@c.test', name: 'N', passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+    })
+    await assignClaim({ db, shiftId: shift.id, userId: nurse.id, actorId: nurse.id })
+
+    const claims = { DOCTOR: 0, NURSE: 1, RECEPTIONIST: 0 }
+    const coverage = computeCoverage({ DOCTOR: 1, NURSE: 2, RECEPTIONIST: 0 }, claims)
+
+    expect(coverage.status).toBe('PARTIAL')
+    expect(coverage.missing).toEqual({ DOCTOR: 1, NURSE: 1, RECEPTIONIST: 0 })
+  })
+
+  it('survives an encode/decode round trip with real claim data', async () => {
+    const view: WeekView = {
+      isoWeek: '2026-W49',
+      staff: [{ id: 1, name: 'N', profession: 'NURSE' }],
+      shifts: [{
+        id: 1, version: 0,
+        startsAt: '2026-12-01T09:00:00.000Z', endsAt: '2026-12-01T17:00:00.000Z',
+        requirements: { DOCTOR: 1, NURSE: 2, RECEPTIONIST: 0 },
+        claimantIds: [1],
+      }],
+    }
+    expect(decodeWeek(encodeWeek(view))).toEqual(view)
+  })
+})
+```
+
+- [ ] **Step 7: Run the tests to verify they pass**
+
+Run: `npm test -- tests/contracts/week-codec.test.ts tests/api/coverage.test.ts`
+Expected: PASS, 9 tests.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add lib/coverage.ts lib/contracts/week.ts app/api/weeks tests/contracts tests/api
+git commit -m "feat: add week coverage endpoint with dictionary-encoded payload
+
+Staff names and profession labels appear once per response rather than once
+per claim. computeCoverage is the single definition of full/partial/empty and
+of which roles are missing.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 14: Realtime broadcast trigger, event replay and the import API
+
+**Files:**
+- Create: `prisma/migrations/<ts>_realtime_broadcast/migration.sql`, `app/api/events/since/route.ts`, `app/api/imports/route.ts`, `app/api/imports/[runId]/route.ts`, `lib/contracts/imports.ts`, `lib/contracts/events.ts`
+- Test: `tests/api/imports.test.ts`, `tests/api/events.test.ts`
+
+**Interfaces:**
+- Consumes: `runStaffImport`/`runShiftImport`/`applyStaffImport`/`applyShiftImport` (Tasks 7–8), `paginate` (Task 12), `withAuth` (Task 9).
+- Produces:
+  - `GET /api/events/since?id=&topic=` → `{ events: OutboxEvent[]; lastId: string }`
+  - `POST /api/imports` (multipart, `file` + `kind`) → `{ runId, stats }`
+  - `GET /api/imports` (cursor) → run list
+  - `GET /api/imports/[runId]` (cursor) → `{ run, rows, nextCursor }`
+
+- [ ] **Step 1: Write the broadcast migration**
+
+Create a migration with `npx prisma migrate dev --create-only --name realtime_broadcast`, then put this in its `migration.sql`:
+
+```sql
+-- Turn every outbox insert into a Supabase Realtime broadcast (§7.1).
+-- Emitting from a trigger rather than from application code is what ties the
+-- event to the transaction: a rolled-back mutation never broadcasts, and a
+-- committed one always does.
+CREATE OR REPLACE FUNCTION public.broadcast_outbox_event()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  PERFORM realtime.send(
+    jsonb_build_object(
+      'id',         NEW.id::text,
+      'type',       NEW.type,
+      'payload',    NEW.payload,
+      'mutationId', NEW."mutationId"
+    ),
+    NEW.type,
+    NEW.topic,
+    false               -- public channel; membership is already gated by app auth
+  );
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER outbox_broadcast
+  AFTER INSERT ON "EventOutbox"
+  FOR EACH ROW EXECUTE FUNCTION public.broadcast_outbox_event();
+```
+
+**Note for local/CI Postgres:** plain Postgres has no `realtime` schema, so the
+trigger would fail. Guard it so tests and `docker compose` still work:
+
+```sql
+-- Only install the trigger where Supabase Realtime is present.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'realtime') THEN
+    CREATE TRIGGER outbox_broadcast
+      AFTER INSERT ON "EventOutbox"
+      FOR EACH ROW EXECUTE FUNCTION public.broadcast_outbox_event();
+  END IF;
+END $$;
+```
+
+Replace the bare `CREATE TRIGGER` above with this guarded block. The outbox row
+is written either way, so `GET /api/events/since` — and therefore replay and the
+polling fallback — works identically without Supabase.
+
+- [ ] **Step 2: Write the events replay test**
+
+Create `tests/api/events.test.ts`:
+
+```ts
+import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { assignClaim } from '@/lib/rules/assign'
+import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
+
+beforeEach(resetTestDb)
+afterAll(stopTestDb)
+
+async function setup() {
+  const db = await getTestDb()
+  const shift = await db.shift.create({
+    data: {
+      startsAt: new Date('2026-12-01T09:00Z'), endsAt: new Date('2026-12-01T17:00Z'),
+      requirements: { create: [
+        { profession: 'NURSE', requiredCount: 3 },
+        { profession: 'DOCTOR', requiredCount: 0 },
+        { profession: 'RECEPTIONIST', requiredCount: 0 },
+      ] },
+    },
+  })
+  return { db, shift }
+}
+
+describe('event outbox replay', () => {
+  it('assigns strictly increasing ids so a client can resume from its last seen', async () => {
+    const { db, shift } = await setup()
+    for (let i = 0; i < 3; i++) {
+      const n = await db.user.create({
+        data: { email: `n${i}@c.test`, name: `N${i}`, passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+      })
+      await assignClaim({ db, shiftId: shift.id, userId: n.id, actorId: n.id })
+    }
+
+    const all = await db.eventOutbox.findMany({ orderBy: { id: 'asc' } })
+    expect(all).toHaveLength(3)
+    const ids = all.map((e) => Number(e.id))
+    expect(ids).toEqual([...ids].sort((a, b) => a - b))
+
+    const after = await db.eventOutbox.findMany({ where: { id: { gt: all[0]!.id } }, orderBy: { id: 'asc' } })
+    expect(after).toHaveLength(2)
+  })
+
+  it('carries the mutationId through so the originator can drop its own echo', async () => {
+    const { db, shift } = await setup()
+    const n = await db.user.create({
+      data: { email: 'n@c.test', name: 'N', passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+    })
+    await assignClaim({ db, shiftId: shift.id, userId: n.id, actorId: n.id, mutationId: 'abcd1234efgh' })
+
+    const event = await db.eventOutbox.findFirstOrThrow()
+    expect(event.mutationId).toBe('abcd1234efgh')
+    expect(event.topic).toBe('week:2026-W49')
+  })
+
+  it('writes no event when the mutation is rejected', async () => {
+    const { db, shift } = await setup()
+    const doctor = await db.user.create({
+      data: { email: 'd@c.test', name: 'D', passwordHash: 'x', role: 'STAFF', profession: 'DOCTOR' },
+    })
+    const result = await assignClaim({ db, shiftId: shift.id, userId: doctor.id, actorId: doctor.id })
+
+    expect('code' in result && result.code).toBe('PROFESSION_NOT_REQUIRED')
+    expect(await db.eventOutbox.count()).toBe(0)
+  })
+})
+```
+
+- [ ] **Step 3: Run it to verify it passes**
+
+Run: `npm test -- tests/api/events.test.ts`
+Expected: PASS, 3 tests. (`emitEvent` already exists from Task 10; this test pins the
+guarantees the realtime layer depends on.)
+
+- [ ] **Step 4: Implement the events endpoint**
+
+Create `lib/contracts/events.ts`:
+
+```ts
+import { z } from 'zod'
+
+export const eventsSinceQuerySchema = z.object({
+  id: z.string().regex(/^\d+$/).default('0'),
+  topic: z.string().min(1).max(64),
+  limit: z.coerce.number().int().min(1).max(500).default(200),
+})
+
+export const outboxEventSchema = z.object({
+  id: z.string(),
+  type: z.string(),
+  payload: z.record(z.unknown()),
+  mutationId: z.string().nullable(),
+})
+
+export type OutboxEvent = z.infer<typeof outboxEventSchema>
+```
+
+Create `app/api/events/since/route.ts`:
+
+```ts
+import { NextResponse } from 'next/server'
+import { prisma } from '@/lib/db/client'
+import { withAuth, errorResponse } from '@/lib/auth/with-auth'
+import { createAppError } from '@/lib/domain/errors'
+import { eventsSinceQuerySchema } from '@/lib/contracts/events'
+
+/**
+ * Replay for reconnecting clients (§7.1). Supabase Realtime broadcast is
+ * at-most-once with no history, so a client that slept or dropped its socket
+ * fetches the gap here rather than silently missing updates.
+ */
+export const GET = withAuth('shift:read', async (req) => {
+  const url = new URL(req.url)
+  const parsed = eventsSinceQuerySchema.safeParse({
+    id: url.searchParams.get('id') ?? undefined,
+    topic: url.searchParams.get('topic') ?? undefined,
+    limit: url.searchParams.get('limit') ?? undefined,
+  })
+  if (!parsed.success) {
+    return errorResponse(createAppError('INVALID_INPUT', parsed.error.issues[0]!.message))
+  }
+
+  const rows = await prisma.eventOutbox.findMany({
+    where: { topic: parsed.data.topic, id: { gt: BigInt(parsed.data.id) } },
+    orderBy: { id: 'asc' },
+    take: parsed.data.limit,
+  })
+
+  return NextResponse.json({
+    events: rows.map((e) => ({
+      id: e.id.toString(), type: e.type,
+      payload: e.payload, mutationId: e.mutationId,
+    })),
+    lastId: rows.length > 0 ? rows[rows.length - 1]!.id.toString() : parsed.data.id,
+    /** True when the page was capped — the client should resync rather than assume it caught up. */
+    truncated: rows.length === parsed.data.limit,
+  })
+})
+```
+
+- [ ] **Step 5: Implement the import API**
+
+Create `lib/contracts/imports.ts`:
+
+```ts
+import { z } from 'zod'
+
+export const importKindSchema = z.enum(['STAFF', 'SHIFT'])
+
+export const importStatsSchema = z.object({
+  accepted: z.number().int(),
+  merged: z.number().int(),
+  rejected: z.number().int(),
+  total: z.number().int(),
+})
+
+export const importIssueSchema = z.object({
+  code: z.string(),
+  severity: z.enum(['REPAIR', 'FATAL']),
+  message: z.string(),
+  field: z.string().optional(),
+  before: z.string().optional(),
+  after: z.string().optional(),
+})
+
+export const importRowSchema = z.object({
+  id: z.number().int(),
+  rowNumber: z.number().int(),
+  rawRow: z.string(),
+  outcome: z.enum(['ACCEPTED', 'REPAIRED', 'MERGED', 'REJECTED']),
+  issues: z.array(importIssueSchema),
+})
+
+export type ImportKind = z.infer<typeof importKindSchema>
+export type ImportRowView = z.infer<typeof importRowSchema>
+```
+
+Create `app/api/imports/route.ts`:
+
+```ts
+import { NextResponse } from 'next/server'
+import bcrypt from 'bcryptjs'
+import { prisma } from '@/lib/db/client'
+import { withAuth, errorResponse } from '@/lib/auth/with-auth'
+import { createAppError } from '@/lib/domain/errors'
+import { paginate } from '@/lib/db/paginate'
+import { pageQuerySchema } from '@/lib/contracts/common'
+import { importKindSchema } from '@/lib/contracts/imports'
+import { runShiftImport, runStaffImport } from '@/lib/import'
+import { applyShiftImport, applyStaffImport } from '@/lib/import/apply'
+
+const MAX_BYTES = 2 * 1024 * 1024
+
+export const GET = withAuth('import:read', async (req) => {
+  const url = new URL(req.url)
+  const { cursor, limit } = pageQuerySchema.parse({
+    cursor: url.searchParams.get('cursor'),
+    limit: url.searchParams.get('limit') ?? undefined,
+  })
+
+  const page = await paginate({
+    limit, cursor,
+    findMany: (args) => prisma.importRun.findMany({
+      ...args,
+      select: {
+        id: true, source: true, fileKind: true, filename: true,
+        stats: true, createdAt: true,
+        actor: { select: { name: true } },
+      },
+    }),
+  })
+
+  return NextResponse.json(page)
+})
+
+/**
+ * Manager CSV upload. Runs the exact same engine as the seed (§5, §7.2) —
+ * there is no separate "upload parser" that could drift from the seeded rules.
+ */
+export const POST = withAuth('import:run', async (req, ctx) => {
+  const form = await req.formData().catch(() => null)
+  if (!form) return errorResponse(createAppError('INVALID_INPUT', 'Expected a multipart upload.'))
+
+  const file = form.get('file')
+  const kindRaw = form.get('kind')
+
+  if (!(file instanceof File)) {
+    return errorResponse(createAppError('INVALID_INPUT', 'No file was uploaded.'))
+  }
+  if (file.size > MAX_BYTES) {
+    return errorResponse(createAppError('INVALID_INPUT', 'File is larger than 2 MB.'))
+  }
+
+  const kind = importKindSchema.safeParse(kindRaw)
+  if (!kind.success) {
+    return errorResponse(createAppError('INVALID_INPUT', 'kind must be STAFF or SHIFT.'))
+  }
+
+  const text = await file.text()
+  const passwordHash = await bcrypt.hash(process.env.SEED_PASSWORD ?? 'medroster123', 10)
+  const meta = {
+    source: 'UPLOAD' as const,
+    filename: file.name,
+    actorId: ctx.principal.id,
+    passwordHash,
+  }
+
+  const { runId, stats } = await prisma.$transaction(async (tx) => {
+    if (kind.data === 'STAFF') {
+      const result = runStaffImport(text)
+      return { runId: await applyStaffImport(tx, result, meta), stats: result.stats }
+    }
+    const result = runShiftImport(text)
+    return { runId: await applyShiftImport(tx, result, meta), stats: result.stats }
+  }, { timeout: 60_000 })
+
+  return NextResponse.json({ runId, stats }, { status: 201 })
+})
+```
+
+Create `app/api/imports/[runId]/route.ts`:
+
+```ts
+import { NextResponse } from 'next/server'
+import { prisma } from '@/lib/db/client'
+import { withAuth, errorResponse } from '@/lib/auth/with-auth'
+import { createAppError } from '@/lib/domain/errors'
+import { paginate } from '@/lib/db/paginate'
+import { pageQuerySchema } from '@/lib/contracts/common'
+
+export const GET = withAuth<{ runId: string }>('import:read', async (req, ctx) => {
+  const runId = Number((await ctx.params).runId)
+  if (!Number.isInteger(runId)) {
+    return errorResponse(createAppError('INVALID_INPUT', 'Bad run id.'))
+  }
+
+  const run = await prisma.importRun.findUnique({
+    where: { id: runId },
+    select: {
+      id: true, source: true, fileKind: true, filename: true,
+      stats: true, createdAt: true, actor: { select: { name: true } },
+    },
+  })
+  if (!run) return errorResponse(createAppError('NOT_FOUND', 'No such import run.'))
+
+  const url = new URL(req.url)
+  const { cursor, limit } = pageQuerySchema.parse({
+    cursor: url.searchParams.get('cursor'),
+    limit: url.searchParams.get('limit') ?? undefined,
+  })
+  const outcome = url.searchParams.get('outcome')
+
+  const page = await paginate({
+    limit, cursor,
+    findMany: (args) => prisma.importRowResult.findMany({
+      ...args,
+      where: {
+        importRunId: runId,
+        ...(outcome && ['ACCEPTED', 'REPAIRED', 'MERGED', 'REJECTED'].includes(outcome)
+          ? { outcome: outcome as never } : {}),
+      },
+      select: { id: true, rowNumber: true, rawRow: true, outcome: true, issues: true },
+    }),
+  })
+
+  return NextResponse.json({ run, ...page })
+})
+```
+
+- [ ] **Step 6: Write the import API test**
+
+Create `tests/api/imports.test.ts`:
+
+```ts
+import { readFileSync } from 'node:fs'
+import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { runStaffImport } from '@/lib/import'
+import { applyStaffImport } from '@/lib/import/apply'
+import { paginate } from '@/lib/db/paginate'
+import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
+
+beforeEach(resetTestDb)
+afterAll(stopTestDb)
+
+describe('import report data', () => {
+  it('pages through all 41 report rows without repeats', async () => {
+    const db = await getTestDb()
+    const result = runStaffImport(readFileSync('staff.csv', 'utf8'))
+    const runId = await db.$transaction((tx) =>
+      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv', passwordHash: 'x' }))
+
+    const seen: number[] = []
+    let cursor: string | null = null
+    do {
+      const page = await paginate({
+        limit: 10, cursor,
+        findMany: (args) => db.importRowResult.findMany({ ...args, where: { importRunId: runId } }),
+      })
+      seen.push(...page.items.map((r) => r.id))
+      cursor = page.nextCursor
+    } while (cursor)
+
+    expect(seen).toHaveLength(41)
+    expect(new Set(seen).size).toBe(41)
+  })
+
+  it('can filter the report down to just the rejections', async () => {
+    const db = await getTestDb()
+    const result = runStaffImport(readFileSync('staff.csv', 'utf8'))
+    const runId = await db.$transaction((tx) =>
+      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv', passwordHash: 'x' }))
+
+    const rejected = await db.importRowResult.findMany({
+      where: { importRunId: runId, outcome: 'REJECTED' },
+    })
+    expect(rejected).toHaveLength(4)
+    expect(rejected.map((r) => Number(r.rawRow.split(',')[0])).sort())
+      .toEqual([995, 996, 997, 998])
+  })
+
+  it('stores the stats the run reported', async () => {
+    const db = await getTestDb()
+    const result = runStaffImport(readFileSync('staff.csv', 'utf8'))
+    const runId = await db.$transaction((tx) =>
+      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv', passwordHash: 'x' }))
+
+    const run = await db.importRun.findUniqueOrThrow({ where: { id: runId } })
+    expect(run.stats).toEqual({ accepted: 34, merged: 3, rejected: 4, total: 41 })
+  })
+})
+```
+
+- [ ] **Step 7: Run the tests to verify they pass**
+
+Run: `npm test -- tests/api`
+Expected: PASS.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add prisma/migrations app/api/events app/api/imports lib/contracts tests/api
+git commit -m "feat: add realtime broadcast trigger, event replay and import API
+
+The broadcast fires from a trigger on the outbox insert, so an event exists if
+and only if its mutation committed. The trigger is guarded on the realtime
+schema being present so plain Postgres in CI and Docker still works.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
 <!-- PLAN-CONTINUES -->
