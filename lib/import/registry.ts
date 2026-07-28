@@ -44,36 +44,67 @@ export function createFieldRule<In, Out>(spec: FieldRule<In, Out>): FieldRule<In
 }
 
 /**
- * Flattens and de-duplicates the `emits` lists of several rules into one
- * legend, keyed by code. Throws if the same code is registered by two
- * rules with a different `describe` or `severity` — two rules silently
- * disagreeing about what a code means is exactly the drift this exists to
- * prevent.
- *
- * Takes a minimal structural type rather than `FieldRule<never, unknown>[]`:
- * this function only ever reads `rule.emits` and never touches `run`, so
- * there is no need for the `In`/`Out` generic-variance workaround at all.
+ * Shared core for `collectLegend` and `mergeLegends` below: flattens several
+ * groups of descriptors into one legend, keyed by code, throwing if the same
+ * code is registered twice with a different `describe`, `severity` or
+ * `field` — two rules (or two whole pipelines) silently disagreeing about
+ * what a code means, or which column it governs, is exactly the drift this
+ * exists to prevent. Deliberately the ONE place this check is implemented,
+ * so a same-rule collision and a cross-pipeline collision are caught the
+ * same way instead of one throwing and the other being resolved silently
+ * first-entry-wins.
  */
-export function collectLegend(rules: { emits: RuleDescriptor[] }[]): RuleDescriptor[] {
+function mergeDescriptorGroups(groups: RuleDescriptor[][]): RuleDescriptor[] {
   const byCode = new Map<string, RuleDescriptor>()
 
-  for (const rule of rules) {
-    for (const descriptor of rule.emits) {
+  for (const group of groups) {
+    for (const descriptor of group) {
       const existing = byCode.get(descriptor.code)
       if (existing === undefined) {
         byCode.set(descriptor.code, descriptor)
         continue
       }
-      if (existing.describe !== descriptor.describe || existing.severity !== descriptor.severity) {
+      if (
+        existing.describe !== descriptor.describe ||
+        existing.severity !== descriptor.severity ||
+        existing.field !== descriptor.field
+      ) {
         throw new Error(
           `collectLegend: code "${descriptor.code}" is registered twice with conflicting text — ` +
-          `"${existing.describe}" (${existing.severity}) vs "${descriptor.describe}" (${descriptor.severity}).`,
+          `field="${existing.field}" ${existing.severity} "${existing.describe}" vs ` +
+          `field="${descriptor.field}" ${descriptor.severity} "${descriptor.describe}".`,
         )
       }
     }
   }
 
   return [...byCode.values()]
+}
+
+/**
+ * Flattens and de-duplicates the `emits` lists of several rules into one
+ * legend. See `mergeDescriptorGroups` for the conflict semantics.
+ *
+ * Takes a minimal structural type rather than `FieldRule<never, unknown>[]`:
+ * this function only ever reads `rule.emits` and never touches `run`, so
+ * there is no need for the `In`/`Out` generic-variance workaround at all.
+ */
+export function collectLegend(rules: { emits: RuleDescriptor[] }[]): RuleDescriptor[] {
+  return mergeDescriptorGroups(rules.map((rule) => rule.emits))
+}
+
+/**
+ * Merges several already-flat `RuleDescriptor[]` sources into one legend —
+ * e.g. `RECONCILE_RULES`, `STRUCTURAL_RULES`, `SHIFT_WINDOW_RULES`, and the
+ * flattened `emits` of `STAFF_RULES`/`SHIFT_RULES` — with the SAME
+ * throw-on-conflict semantics as `collectLegend`. `lib/import/legend.ts`
+ * uses this to assemble `IMPORT_LEGEND` so that a cross-pipeline code
+ * collision (e.g. two pipelines both emitting `INVALID_ID` with different
+ * text) fails the build the same way a same-rule collision does, rather
+ * than being silently resolved first-entry-wins one module up.
+ */
+export function mergeLegends(...groups: RuleDescriptor[][]): RuleDescriptor[] {
+  return mergeDescriptorGroups(groups)
 }
 
 /** Convenience for rules that repair a value in place and log the before/after. */

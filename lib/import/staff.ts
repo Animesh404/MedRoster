@@ -20,9 +20,20 @@ export interface StaffRow {
 
 const EMAIL_SHAPE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
 
+/**
+ * `field`/`describe` are deliberately field-agnostic ('staff_id / shift_id',
+ * 'Id is not a whole number.') rather than staff-specific, mirroring the
+ * pattern `makeTimeRule` already uses for `TIME_WHITESPACE` / `MISSING_TIME`
+ * / `BAD_TIME_FORMAT` in shifts.ts. `shifts.ts`'s own `idRule` emits the
+ * SAME `INVALID_ID` code, and `collectLegend`/`mergeLegends` treat a code
+ * registered twice with differing text as a bug (Finding 1) — so both
+ * pipelines must agree on the static legend text even though each pipeline's
+ * per-row `Issue.message`/`field` below stays specific ("Staff id is not a
+ * whole number.", field: 'staff_id').
+ */
 export const idRule = createFieldRule<string, number>({
   emits: [
-    { code: 'INVALID_ID', field: 'staff_id', severity: 'FATAL', describe: 'Staff id is not a whole number.' },
+    { code: 'INVALID_ID', field: 'staff_id / shift_id', severity: 'FATAL', describe: 'Id is not a whole number.' },
   ],
   run(cell, ctx) {
     const trimmed = cell.trim()

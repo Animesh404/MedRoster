@@ -1,4 +1,4 @@
-import { collectLegend, STRUCTURAL_RULES, SHIFT_WINDOW_RULES, type RuleDescriptor } from './registry'
+import { collectLegend, mergeLegends, STRUCTURAL_RULES, SHIFT_WINDOW_RULES, type RuleDescriptor } from './registry'
 import { RECONCILE_RULES } from './reconcile'
 import { STAFF_RULES } from './staff'
 import { SHIFT_RULES } from './shifts'
@@ -15,32 +15,24 @@ import { SHIFT_RULES } from './shifts'
  *    (`STRUCTURAL_RULES`),
  *  - cross-field shift-window business rules (`SHIFT_WINDOW_RULES`).
  *
- * `collectLegend` is run separately over `STAFF_RULES` and `SHIFT_RULES`
- * rather than over their concatenation. Both pipelines happen to reuse the
- * code `INVALID_ID` for their id column, each with its own field-specific
- * describe text ("Staff id is not a whole number." vs "Shift id is not a
- * whole number.") — legitimate within each pipeline alone, but a genuine
- * text conflict once merged, which `collectLegend` treats as a bug and
- * throws on rather than silently resolving. Neither `staff.ts` nor
- * `shifts.ts` may be edited to rename the code (both are reviewed clean and
- * existing tests assert on `INVALID_ID` for each), so the merge instead
- * happens here, by hand, with explicit first-entry-wins semantics — the
- * same rule `collectLegend` itself documents, just applied across the
- * module boundary instead of within a single call. `STAFF_RULES` is listed
- * first, so a manager reading the legend sees "Staff id is not a whole
- * number." for `INVALID_ID`.
+ * Both pipelines' `idRule` reuse the code `INVALID_ID` for their id column.
+ * That used to be a genuine text conflict once merged (staff.ts said "Staff
+ * id...", shifts.ts said "Shift id..."), which is exactly the drift
+ * `collectLegend` exists to catch — so both descriptors were made
+ * field-agnostic at the source (`field: 'staff_id / shift_id'`, `describe:
+ * 'Id is not a whole number.'`), the same pattern already used for
+ * `TIME_WHITESPACE`/`MISSING_TIME`/`BAD_TIME_FORMAT` in shifts.ts. Per-row
+ * `Issue`s are unaffected — they still carry the pipeline-specific field and
+ * message via each rule's `run` closure.
+ *
+ * With that fixed at the source, `mergeLegends` below can merge every source
+ * with the SAME throw-on-conflict semantics `collectLegend` uses internally
+ * for a single rule set — no first-entry-wins escape hatch. If a future rule
+ * reintroduces a same-code/different-text collision across pipelines, this
+ * throws at module load (build time), not silently documents the wrong
+ * pipeline's text.
  */
-function mergeLegend(...groups: RuleDescriptor[][]): RuleDescriptor[] {
-  const byCode = new Map<string, RuleDescriptor>()
-  for (const group of groups) {
-    for (const descriptor of group) {
-      if (!byCode.has(descriptor.code)) byCode.set(descriptor.code, descriptor)
-    }
-  }
-  return [...byCode.values()]
-}
-
-export const IMPORT_LEGEND: RuleDescriptor[] = mergeLegend(
+export const IMPORT_LEGEND: RuleDescriptor[] = mergeLegends(
   collectLegend(STAFF_RULES),
   collectLegend(SHIFT_RULES),
   RECONCILE_RULES,

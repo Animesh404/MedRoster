@@ -39,6 +39,33 @@ describe('staff reconciliation', () => {
     expect(r.rows[1]!.outcome).toBe('MERGED')
     expect(r.rows[1]!.issues.map((i) => i.code)).toContain('DUPLICATE_ID_CONFLICT')
   })
+
+  it('a third row reusing an already-merged-away id resolves to the surviving record, not a fresh one', () => {
+    // Regression for the "silent un-merge" bug: `index` used to be populated
+    // only when a row was first ACCEPTED, never when a later row MERGED into
+    // it. So a genuine triple duplicate — id 105 (lowest, survives), then id
+    // 999 filed with the identical email (merges into 105 via the email key,
+    // as already covered above) — left 999's OWN id key unindexed. A THIRD
+    // row also claiming id 999, but with a typo'd email that no longer
+    // matches 105's email, found nothing in `index` and was accepted afresh
+    // as a brand-new record under id 999, un-merging what should have stayed
+    // folded into 105.
+    const r = runStaffImport(S +
+      '105,Zainab Volkov,NURSE,zainab.volkov@clinicmail.test\n' +
+      '999,Zainab Volkov,NURSE,zainab.volkov@clinicmail.test\n' +
+      '999,Zainab Volkov,NURSE,zainab.vollkov@clinicmail.test\n')
+
+    expect(r.accepted).toHaveLength(1)
+    expect(r.accepted[0]!.externalId).toBe(105)
+    expect(r.stats).toMatchObject({ accepted: 1, merged: 2, rejected: 0, total: 3 })
+
+    const merged = r.rows.filter((row) => row.outcome === 'MERGED')
+    expect(merged).toHaveLength(2)
+    for (const row of merged) {
+      expect(row.mergedIntoExternalId).toBe(105)
+      expect(row.record).toBeNull()
+    }
+  })
 })
 
 describe('shift reconciliation', () => {

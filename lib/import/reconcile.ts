@@ -117,6 +117,18 @@ function reconcile<T extends { externalId: number }>(
     if (decision === 'REJECT') {
       rows.push({ rowNumber: row.rowNumber, raw: row.raw, issues, outcome: deriveOutcome(issues, false), record: null })
     } else {
+      // Index the merged-away row's OWN keys too (not just the survivor's),
+      // pointing at the survivor's external id. Without this, a THIRD row
+      // that reuses this row's id (or email) — e.g. a second duplicate of
+      // staff 999 filed with a typo'd email — would find nothing in `index`
+      // (999's id key was never added, only 105's was), fall through to the
+      // "new record" branch, and get accepted afresh under an id that was
+      // already supposed to have been merged away. `if (!index.has(k))`
+      // guards against clobbering a DIFFERENT existing survivor's key.
+      for (const key of keys) {
+        const k = key(row.record)
+        if (!index.has(k)) index.set(k, hitId)
+      }
       rows.push({
         rowNumber: row.rowNumber, raw: row.raw, issues, record: null,
         outcome: deriveOutcome(issues, true),
