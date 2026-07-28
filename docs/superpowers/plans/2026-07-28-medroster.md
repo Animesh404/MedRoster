@@ -502,6 +502,8 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
   - `clinicWallTimeToUtc(date: string, time: string): Date` — `date` is `yyyy-mm-dd`, `time` is `HH:MM`, both clinic-local
   - `overlaps(a: Interval, b: Interval): boolean` where `Interval = { startsAt: Date; endsAt: Date }`
   - `durationMinutes(a: Interval): number`
+  - `addDays(isoDate: string, n: number): string`
+  - `resolveShiftWindow(date, startTime, endTime, endsNextDay?): { startsAt: Date; endsAt: Date; rolledOverToNextDay: boolean }` — **the single definition of the overnight-rollover rule**, shared by the importer (Task 6) and the shift API (Task 12)
   - `isoWeekOf(d: Date): string` — e.g. `"2026-W33"`
   - `weekBounds(isoWeek: string): { start: Date; end: Date }`
   - `createAppError(code, message, meta?)` and the `RuleCode` union
@@ -537,7 +539,10 @@ Create `tests/domain/time.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest'
-import { clinicWallTimeToUtc, durationMinutes, isoWeekOf, overlaps, weekBounds } from '@/lib/domain/time'
+import {
+  addDays, clinicWallTimeToUtc, durationMinutes, isoWeekOf,
+  overlaps, resolveShiftWindow, weekBounds,
+} from '@/lib/domain/time'
 
 describe('clinicWallTimeToUtc', () => {
   it('applies British Summer Time in August', () => {
@@ -573,6 +578,38 @@ describe('durationMinutes', () => {
   it('measures an overnight shift as 8 hours', () => {
     expect(durationMinutes({ startsAt: new Date('2026-08-12T21:00Z'),
                              endsAt:   new Date('2026-08-13T05:00Z') })).toBe(480)
+  })
+})
+
+describe('resolveShiftWindow', () => {
+  it('keeps a same-day shift on its own date', () => {
+    const w = resolveShiftWindow('2026-08-12', '08:00', '16:00')
+    expect(w.rolledOverToNextDay).toBe(false)
+    expect(w.endsAt.toISOString()).toBe('2026-08-12T15:00:00.000Z')
+  })
+
+  it('rolls an overnight shift onto the next day', () => {
+    const w = resolveShiftWindow('2026-08-12', '22:00', '06:00')
+    expect(w.rolledOverToNextDay).toBe(true)
+    expect(w.endsAt.toISOString()).toBe('2026-08-13T05:00:00.000Z')
+  })
+
+  it('treats a 00:00 end as midnight the following day', () => {
+    const w = resolveShiftWindow('2026-08-12', '16:00', '00:00')
+    expect(w.rolledOverToNextDay).toBe(true)
+    expect((w.endsAt.getTime() - w.startsAt.getTime()) / 3_600_000).toBe(8)
+  })
+
+  it('honours an explicit next-day flag even when the clock reads later', () => {
+    const w = resolveShiftWindow('2026-08-12', '08:00', '10:00', true)
+    expect(w.rolledOverToNextDay).toBe(true)
+    expect((w.endsAt.getTime() - w.startsAt.getTime()) / 3_600_000).toBe(26)
+  })
+})
+
+describe('addDays', () => {
+  it('crosses a month boundary', () => {
+    expect(addDays('2026-08-31', 1)).toBe('2026-09-01')
   })
 })
 
@@ -676,6 +713,48 @@ export function overlaps(a: Interval, b: Interval): boolean {
 
 export function durationMinutes(a: Interval): number {
   return (a.endsAt.getTime() - a.startsAt.getTime()) / 60_000
+}
+
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+export function addDays(isoDate: string, n: number): string {
+  const [y, m, d] = isoDate.split('-').map(Number)
+  const dt = new Date(Date.UTC(y!, m! - 1, d! + n))
+  return `${dt.getUTCFullYear()}-${pad2(dt.getUTCMonth() + 1)}-${pad2(dt.getUTCDate())}`
+}
+
+export interface ShiftWindow {
+  startsAt: Date
+  endsAt: Date
+  rolledOverToNextDay: boolean
+}
+
+/**
+ * Resolves a clinic-local date plus start/end wall times into UTC instants.
+ *
+ * An end at or before the start means the shift runs into the next day; an
+ * explicit `endsNextDay` (the importer's "+1" suffix) forces the same rollover.
+ * This is the SINGLE definition of that rule — the importer and the shift API
+ * both call it, so a shift created through the UI and one imported from CSV can
+ * never disagree about what "22:00-06:00" means.
+ */
+export function resolveShiftWindow(
+  date: string,
+  startTime: string,
+  endTime: string,
+  endsNextDay = false,
+): ShiftWindow {
+  const [sh, sm] = startTime.split(':').map(Number)
+  const [eh, em] = endTime.split(':').map(Number)
+
+  const rolledOverToNextDay = endsNextDay || eh! * 60 + em! <= sh! * 60 + sm!
+  const endDate = rolledOverToNextDay ? addDays(date, 1) : date
+
+  return {
+    startsAt: clinicWallTimeToUtc(date, startTime),
+    endsAt: clinicWallTimeToUtc(endDate, endTime),
+    rolledOverToNextDay,
+  }
 }
 
 /** ISO-8601 week, e.g. "2026-W33". Weeks start Monday; week 1 contains the first Thursday. */
@@ -1409,7 +1488,7 @@ Create `lib/import/shifts.ts`:
 
 ```ts
 import type { Profession } from '@prisma/client'
-import { clinicWallTimeToUtc, durationMinutes } from '@/lib/domain/time'
+import { addDays, durationMinutes, resolveShiftWindow } from '@/lib/domain/time'
 import { parseProfession } from '@/lib/domain/profession'
 import { splitCsv } from './csv'
 import type { Issue } from './issues'
@@ -1505,12 +1584,6 @@ function coerceTime(cell: string, field: string, ctx: RuleContext): ParsedTime |
   return { hh, mm, plusDay: m[3] === '+1' }
 }
 
-function nextDay(isoDate: string): string {
-  const [y, m, d] = isoDate.split('-').map(Number)
-  const dt = new Date(Date.UTC(y!, m! - 1, d! + 1))
-  return `${dt.getUTCFullYear()}-${pad(dt.getUTCMonth() + 1)}-${pad(dt.getUTCDate())}`
-}
-
 const REQUIREMENT_PAIR = /^([a-z_]+)=(\d+)$/
 
 function coerceRequirements(cell: string, ctx: RuleContext): Record<Profession, number> | null {
@@ -1578,24 +1651,28 @@ export function parseShiftRows(text: string): ShiftRow[] {
       return { rowNumber, raw, record: null, issues: ctx.issues }
     }
 
-    const startsAt = clinicWallTimeToUtc(date, `${pad(start.hh)}:${pad(start.mm)}`)
+    const startTime = `${pad(start.hh)}:${pad(start.mm)}`
+    const endTime = `${pad(end.hh)}:${pad(end.mm)}`
 
-    // An end at or before the start means the shift runs into the next day. A
-    // literal "+1" says so explicitly. Both land in the same rollover, then the
-    // single duration cap below catches 18h, 24h and 26h rows alike. §5.3
-    let endDate = date
-    if (end.plusDay) {
-      endDate = nextDay(date)
-      repairing(ctx, 'EXPLICIT_NEXT_DAY', 'end_time', 'End time carries "+1"; moved to the next day.',
-        cells[3]!.trim(), `${endDate} ${pad(end.hh)}:${pad(end.mm)}`)
-    } else if (end.hh * 60 + end.mm <= start.hh * 60 + start.mm) {
-      endDate = nextDay(date)
-      repairing(ctx, 'OVERNIGHT_ROLLOVER', 'end_time',
-        'End is at or before the start, so the shift runs overnight; moved the end to the next day.',
-        cells[3]!.trim(), `${endDate} ${pad(end.hh)}:${pad(end.mm)}`)
+    // The rollover rule itself lives in resolveShiftWindow so the importer and
+    // the shift API cannot disagree about what "22:00-06:00" means. Here we only
+    // LOG which repair happened; the single duration cap below then catches the
+    // 18h, 24h and 26h rows alike. §5.3
+    const window = resolveShiftWindow(date, startTime, endTime, end.plusDay)
+
+    if (window.rolledOverToNextDay) {
+      const after = `${addDays(date, 1)} ${endTime}`
+      if (end.plusDay) {
+        repairing(ctx, 'EXPLICIT_NEXT_DAY', 'end_time',
+          'End time carries "+1"; moved to the next day.', cells[3]!.trim(), after)
+      } else {
+        repairing(ctx, 'OVERNIGHT_ROLLOVER', 'end_time',
+          'End is at or before the start, so the shift runs overnight; moved the end to the next day.',
+          cells[3]!.trim(), after)
+      }
     }
 
-    const endsAt = clinicWallTimeToUtc(endDate, `${pad(end.hh)}:${pad(end.mm)}`)
+    const { startsAt, endsAt } = window
     const mins = durationMinutes({ startsAt, endsAt })
 
     if (mins <= 0 || mins > MAX_SHIFT_MINUTES) {
@@ -2360,8 +2437,7 @@ describe('ROLE_PERMISSIONS', () => {
 Create `tests/rbac/routes.test.ts`:
 
 ```ts
-import { readFileSync } from 'node:fs'
-import { globSync } from 'node:fs'
+import { globSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 /**
@@ -4042,24 +4118,12 @@ import { prisma } from '@/lib/db/client'
 import { withAuth, errorResponse } from '@/lib/auth/with-auth'
 import { updateShiftSchema } from '@/lib/contracts/shifts'
 import { createAppError } from '@/lib/domain/errors'
-import { clinicWallTimeToUtc } from '@/lib/domain/time'
+import { resolveShiftWindow } from '@/lib/domain/time'
 import {
   commitShiftDelete, commitShiftEdit, previewShiftDelete, previewShiftEdit,
 } from '@/lib/rules/edit'
 
 const parseId = (raw: string) => (Number.isInteger(Number(raw)) ? Number(raw) : null)
-
-/** Rolls an end at or before the start onto the next day — same rule as the importer (§5.3). */
-function toInstants(date: string, startTime: string, endTime: string) {
-  const startsAt = clinicWallTimeToUtc(date, startTime)
-  let endsAt = clinicWallTimeToUtc(date, endTime)
-  if (endsAt <= startsAt) {
-    const [y, m, d] = date.split('-').map(Number)
-    const next = new Date(Date.UTC(y!, m! - 1, d! + 1))
-    endsAt = clinicWallTimeToUtc(next.toISOString().slice(0, 10), endTime)
-  }
-  return { startsAt, endsAt }
-}
 
 export const GET = withAuth<{ id: string }>('shift:read', async (_req, ctx) => {
   const shiftId = parseId((await ctx.params).id)
@@ -4086,7 +4150,8 @@ export const PATCH = withAuth<{ id: string }>('shift:update', async (req, ctx) =
   }
 
   const { date, startTime, endTime, requirements, expectedVersion, mutationId } = parsed.data
-  const proposed = { ...toInstants(date, startTime, endTime), requirements }
+  const { startsAt, endsAt } = resolveShiftWindow(date, startTime, endTime)
+  const proposed = { startsAt, endsAt, requirements }
 
   const dryRun = new URL(req.url).searchParams.get('dryRun') === '1'
   const result = dryRun
@@ -4162,7 +4227,7 @@ import { paginate } from '@/lib/db/paginate'
 import { pageQuerySchema } from '@/lib/contracts/common'
 import { createShiftSchema } from '@/lib/contracts/shifts'
 import { createAppError } from '@/lib/domain/errors'
-import { clinicWallTimeToUtc } from '@/lib/domain/time'
+import { resolveShiftWindow } from '@/lib/domain/time'
 import { emitEvent } from '@/lib/events/outbox'
 import { weekTopic } from '@/lib/events/topics'
 
@@ -4228,13 +4293,7 @@ export const POST = withAuth('shift:create', async (req, ctx) => {
 
     const ids: number[] = []
     for (const d of dates) {
-      const startsAt = clinicWallTimeToUtc(d, startTime)
-      let endsAt = clinicWallTimeToUtc(d, endTime)
-      if (endsAt <= startsAt) {
-        const [y, m, dd] = d.split('-').map(Number)
-        const next = new Date(Date.UTC(y!, m! - 1, dd! + 1))
-        endsAt = clinicWallTimeToUtc(next.toISOString().slice(0, 10), endTime)
-      }
+      const { startsAt, endsAt } = resolveShiftWindow(d, startTime, endTime)
 
       const shift = await tx.shift.create({
         data: {
