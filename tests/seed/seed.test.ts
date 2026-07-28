@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { runShiftImport, runStaffImport } from '@/lib/import'
 import { applyShiftImport, applyStaffImport } from '@/lib/import/apply'
 import { createRng, seedClaims } from '@/lib/seed/claim-seeder'
+import { runSeed } from '@/lib/seed/run-seed'
 import { computeCoverage } from '@/lib/coverage'
 import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
 
@@ -45,7 +46,7 @@ describe('createRng', () => {
 describe('seedClaims', () => {
   it('creates claims that all satisfy the business rules', async () => {
     const db = await importFixtures()
-    await seedClaims(db, { seed: 1337, fillRatio: 0.55, now: NOW })
+    await seedClaims(db, { seed: 1337, fillRatio: 0.2, now: NOW })
 
     // No user may hold two overlapping shifts.
     const claims = await db.claim.findMany({ include: { shift: true } })
@@ -65,7 +66,7 @@ describe('seedClaims', () => {
 
   it('never exceeds a shift\'s requirement for any profession', async () => {
     const db = await importFixtures()
-    await seedClaims(db, { seed: 1337, fillRatio: 0.55, now: NOW })
+    await seedClaims(db, { seed: 1337, fillRatio: 0.2, now: NOW })
 
     const shifts = await db.shift.findMany({
       include: { requirements: true, claims: { include: { user: true } } },
@@ -80,35 +81,67 @@ describe('seedClaims', () => {
 
   it('is deterministic — the same seed yields the same claim set', async () => {
     const db = await importFixtures()
-    await seedClaims(db, { seed: 1337, fillRatio: 0.55, now: NOW })
+    await seedClaims(db, { seed: 1337, fillRatio: 0.2, now: NOW })
     const first = (await db.claim.findMany({ orderBy: [{ shiftId: 'asc' }, { userId: 'asc' }] }))
       .map((c) => `${c.shiftId}:${c.userId}`)
 
     await db.claim.deleteMany({})
-    await seedClaims(db, { seed: 1337, fillRatio: 0.55, now: NOW })
+    await seedClaims(db, { seed: 1337, fillRatio: 0.2, now: NOW })
     const second = (await db.claim.findMany({ orderBy: [{ shiftId: 'asc' }, { userId: 'asc' }] }))
       .map((c) => `${c.shiftId}:${c.userId}`)
 
     expect(second).toEqual(first)
   })
 
-  it('produces all three coverage states so the dashboard demonstrates each', async () => {
+  it('produces all three coverage states so the dashboard demonstrates each, ' +
+    'with EMPTY genuinely visible rather than a one-shift fluke', async () => {
     const db = await importFixtures()
-    await seedClaims(db, { seed: 1337, fillRatio: 0.55, now: NOW })
+    await seedClaims(db, { seed: 1337, fillRatio: 0.2, now: NOW })
 
     const shifts = await db.shift.findMany({
       include: { requirements: true, claims: { include: { user: true } } },
     })
-    const statuses = new Set(shifts.map((shift) => {
+    const allStatuses = shifts.map((shift) => {
       const req = { DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 }
       for (const r of shift.requirements) req[r.profession] = r.requiredCount
       const have = { DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 }
       for (const c of shift.claims) if (c.user.profession) have[c.user.profession] += 1
       return computeCoverage(req, have).status
-    }))
+    })
+    const statuses = new Set(allStatuses)
 
     expect(statuses).toContain('FULL')
     expect(statuses).toContain('PARTIAL')
     expect(statuses).toContain('EMPTY')
+
+    // A future tuning change to fillRatio must not quietly make the EMPTY
+    // state near-invisible again (it was a single shift out of 109 at the
+    // previous fillRatio of 0.55) — require a real, demoable count.
+    const emptyCount = allStatuses.filter((s) => s === 'EMPTY').length
+    expect(emptyCount).toBeGreaterThanOrEqual(5)
+  })
+})
+
+describe('runSeed', () => {
+  it('running the seed twice adds no duplicate ImportRun rows or claims', async () => {
+    const db = await getTestDb()
+
+    const first = await runSeed(db, { passwordHash: 'x', now: NOW })
+    const firstRunCount = await db.importRun.count()
+    // One SEED ImportRun for staff.csv, one for shifts.csv.
+    expect(firstRunCount).toBe(2)
+    const firstClaimCount = await db.claim.count()
+    expect(firstClaimCount).toBe(first.claimsCreated)
+    expect(firstClaimCount).toBeGreaterThan(0)
+
+    const second = await runSeed(db, { passwordHash: 'x', now: NOW })
+    const secondRunCount = await db.importRun.count()
+    expect(secondRunCount).toBe(firstRunCount)
+    const secondClaimCount = await db.claim.count()
+    expect(secondClaimCount).toBe(firstClaimCount)
+    // The second pass recognizes prior work and skips both the imports and
+    // the claim seeding rather than re-attempting either.
+    expect(second.existingClaims).toBe(firstClaimCount)
+    expect(second.claimsAttempted).toBe(0)
   })
 })
