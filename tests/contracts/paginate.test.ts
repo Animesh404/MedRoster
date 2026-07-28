@@ -14,6 +14,26 @@ describe('cursors', () => {
   it('returns null for a malformed cursor rather than throwing', () => {
     expect(decodeCursor('not-a-cursor')).toBeNull()
   })
+
+  // IMP-4: the shape regex (`/^id:(\d+)$/`) matches an arbitrarily long
+  // digit string, but Prisma's query engine throws a PrismaClientValidationError
+  // (uncaught -> 500) on an id that large. Every other malformed cursor
+  // (garbage, negative, SQL-ish, 10k chars) already degrades gracefully to a
+  // fresh first page; an oversized-but-shape-valid one must too.
+  it('returns null for an id far beyond Int32/safe-integer range, rather than throwing', () => {
+    const oversized = Buffer.from('id:99999999999999999999', 'utf8').toString('base64url')
+    expect(decodeCursor(oversized)).toBeNull()
+  })
+
+  it('returns null for an id just past the Postgres Int32 max', () => {
+    const oversized = Buffer.from('id:2147483648', 'utf8').toString('base64url')
+    expect(decodeCursor(oversized)).toBeNull()
+  })
+
+  it('still accepts an id at the Int32 max', () => {
+    const atMax = Buffer.from('id:2147483647', 'utf8').toString('base64url')
+    expect(decodeCursor(atMax)).toBe(2_147_483_647)
+  })
 })
 
 describe('paginate', () => {
