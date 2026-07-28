@@ -76,11 +76,19 @@ design decisions exist specifically because of them.
 
 ### 2.3 Supply vs demand
 
-109 clean shifts require **388 staffed slots** (nurses 226, doctors 115,
-receptionists 47) against **34 staff** (17 nurses, 8 doctors, 11 receptionists) —
-roughly 13 shifts per nurse over 28 days. The roster is deliberately unstaffable. This
+109 accepted shifts require **385 staffed slots** (nurses 225, doctors 114,
+receptionists 46) against **34 staff** (16 nurses, 8 doctors, 10 receptionists) —
+roughly 14 shifts per nurse over 28 days. The roster is deliberately unstaffable. This
 is realistic and is the reason a coverage dashboard exists, but it means an
 import-only seed produces a wall of identical empty shifts. See §7.2.
+
+> These figures are per *distinct entity after reconciliation*, not per CSV row.
+> An earlier draft of this spec reported 388/226/115/47 and 17/8/11 by counting
+> raw rows: the staff figures double-counted the two byte-identical duplicate
+> rows (103, a receptionist; 110, a nurse), and the shift figures summed over ids
+> 5000–5108, which wrongly includes 5054 (merged into 5053) and wrongly excludes
+> 5111 (accepted with a repair). The corrected staff counts sum to 34, matching
+> the accepted total — the arithmetic check the original numbers failed.
 
 ---
 
