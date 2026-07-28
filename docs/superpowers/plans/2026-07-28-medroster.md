@@ -1917,10 +1917,20 @@ describe('golden file — staff.csv', () => {
     expect(ids.at(-1)).toBe(133)
   })
 
-  it('yields 17 nurses, 8 doctors and 11 receptionists', () => {
+  // Counts are per distinct PERSON after reconciliation, not per CSV row. The two
+  // byte-identical duplicate rows (103 receptionist, 110 nurse) collapse, so a
+  // row-based count would wrongly read 11 and 17. These must sum to 34.
+  it('yields 16 nurses, 8 doctors and 10 receptionists', () => {
     const count = (p: string) => result.accepted.filter((s) => s.profession === p).length
-    expect({ NURSE: count('NURSE'), DOCTOR: count('DOCTOR'), RECEPTIONIST: count('RECEPTIONIST') })
-      .toEqual({ NURSE: 17, DOCTOR: 8, RECEPTIONIST: 11 })
+    const byProfession = {
+      NURSE: count('NURSE'), DOCTOR: count('DOCTOR'), RECEPTIONIST: count('RECEPTIONIST'),
+    }
+    expect(byProfession).toEqual({ NURSE: 16, DOCTOR: 8, RECEPTIONIST: 10 })
+    // Invariant, not a restatement: every accepted person has exactly one
+    // profession, so these must account for all of them. A hardcoded triple that
+    // cannot sum to the accepted total is exactly the bug this guards against.
+    const total = Object.values(byProfession).reduce((a, b) => a + b, 0)
+    expect(total).toBe(result.accepted.length)
   })
 })
 
@@ -1945,11 +1955,14 @@ describe('golden file — shifts.csv', () => {
     expect(days.at(-1)).toBe('2026-08-30')
   })
 
-  it('requires 226 nurse, 115 doctor and 47 receptionist slots in total', () => {
+  // Sums are over the ACCEPTED set: 5054 is merged into 5053 (so its 3/1/1 is not
+  // counted) and 5111 IS accepted with a repair (so its 2/0/0 is). Summing over
+  // raw ids 5000-5108 instead would wrongly give 226/115/47.
+  it('requires 225 nurse, 114 doctor and 46 receptionist slots in total', () => {
     const sum = (p: 'NURSE' | 'DOCTOR' | 'RECEPTIONIST') =>
       result.accepted.reduce((a, s) => a + s.requirements[p], 0)
     expect({ NURSE: sum('NURSE'), DOCTOR: sum('DOCTOR'), RECEPTIONIST: sum('RECEPTIONIST') })
-      .toEqual({ NURSE: 226, DOCTOR: 115, RECEPTIONIST: 47 })
+      .toEqual({ NURSE: 225, DOCTOR: 114, RECEPTIONIST: 46 })
   })
 
   it('never emits two shifts with the same id', () => {
@@ -2294,7 +2307,8 @@ describe('applyShiftImport', () => {
     const agg = await db.shiftRequirement.aggregate({
       _sum: { requiredCount: true }, where: { profession: 'NURSE' },
     })
-    expect(agg._sum.requiredCount).toBe(226)
+    // 225, not 226: 5054 merges into 5053 and 5111 is accepted. See Task 7's golden test.
+    expect(agg._sum.requiredCount).toBe(225)
   })
 })
 ```
