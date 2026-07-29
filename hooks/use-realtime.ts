@@ -25,9 +25,30 @@ export function shouldApply(event: OutboxEvent, ownMutationIds: Set<string>): bo
   return !event.mutationId || !ownMutationIds.has(event.mutationId)
 }
 
-/** True when realtime isn't configured at all — the app must still work
- *  fully by polling, since local Docker Postgres has no `realtime` schema. */
-const HAS_SUPABASE = Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL)
+/**
+ * The browser-safe Supabase key.
+ *
+ * Supabase's newer `sb_publishable_...` key supersedes the legacy `anon` JWT and
+ * goes in exactly the same client position, so this reads the publishable name
+ * first and falls back to the legacy one for anyone still on an older project.
+ *
+ * Both are safe to expose — they are the browser-facing key and carry no more
+ * authority than an anonymous visitor. The `sb_secret_...` key must NEVER appear
+ * behind a `NEXT_PUBLIC_` name: Next inlines those into the client bundle.
+ */
+const SUPABASE_KEY =
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
+  ''
+
+/**
+ * True only when realtime is fully configured. Both halves are required: a url
+ * without a key connects and then silently never delivers, which is worse than
+ * not connecting at all, because the UI would show itself as live while missing
+ * every update. Without both we fall back to polling, which the app supports
+ * fully — local Docker Postgres has no `realtime` schema either way.
+ */
+const HAS_SUPABASE = Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL) && Boolean(SUPABASE_KEY)
 
 // `createClient` throws synchronously — at MODULE LOAD, not just when a
 // channel is opened — the instant its url argument is an empty string, so
@@ -35,7 +56,7 @@ const HAS_SUPABASE = Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL)
 // call site below is already gated on `HAS_SUPABASE`, which is exactly the
 // condition under which `supabase` is non-null here.
 const supabase = HAS_SUPABASE
-  ? createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '')
+  ? createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, SUPABASE_KEY)
   : null
 
 /** How often a polling client re-checks `/api/events/since` when Supabase
