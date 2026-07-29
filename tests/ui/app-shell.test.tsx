@@ -39,3 +39,27 @@ describe('AppShell nav', () => {
     expect(screen.getAllByRole('link', { name: 'Import' }).length).toBeGreaterThan(0)
   })
 })
+
+describe('nav applicability', () => {
+  it('hides My shifts from a manager, who can never hold one', () => {
+    // Managers hold every permission, so a permission check alone let them
+    // through to a page that can never have content and told them to claim a
+    // shift — the one action validateAssignment refuses them.
+    render(
+      <AppShell principal={MANAGER} name="Dana Okonkwo" email="manager@clinicmail.test">
+        <p>content</p>
+      </AppShell>,
+    )
+    expect(screen.queryByRole('link', { name: 'My shifts' })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('link', { name: 'Dashboard' }).length).toBeGreaterThan(0)
+  })
+
+  it('shows My shifts to clinical staff', () => {
+    render(
+      <AppShell principal={STAFF} name="Zainab Volkov" email="zainab.volkov@clinicmail.test">
+        <p>content</p>
+      </AppShell>,
+    )
+    expect(screen.getAllByRole('link', { name: 'My shifts' }).length).toBeGreaterThan(0)
+  })
+})

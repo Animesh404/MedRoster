@@ -7,6 +7,12 @@ interface NavItem {
   href: string
   label: string
   permission: Permission
+  /**
+   * An extra applicability check, for links a user is *allowed* to open but
+   * which can never hold anything for them. Permission answers "may they?";
+   * this answers "is there any point?".
+   */
+  applies?: (principal: Principal) => boolean
 }
 
 /**
@@ -16,7 +22,17 @@ interface NavItem {
  */
 const NAV_ITEMS: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', permission: 'shift:read' },
-  { href: '/my-shifts', label: 'My shifts', permission: 'claim:create:self' },
+  {
+    href: '/my-shifts',
+    label: 'My shifts',
+    permission: 'claim:create:self',
+    // Managers hold every permission, so the permission check alone let them
+    // through — to a page that can never have content. A shift requires a
+    // profession, and a manager has none, so `validateAssignment` rejects them
+    // with PROFESSION_NOT_REQUIRED. The page was therefore permanently empty and
+    // told them to "claim a shift", which is the one thing they cannot do.
+    applies: (p) => p.profession !== null,
+  },
   { href: '/shifts/new', label: 'New shift', permission: 'shift:create' },
   { href: '/import', label: 'Import', permission: 'import:read' },
 ]
@@ -37,7 +53,9 @@ export function AppShell({
   email: string
   children: ReactNode
 }) {
-  const items = NAV_ITEMS.filter((item) => can(principal, item.permission))
+  const items = NAV_ITEMS.filter(
+    (item) => can(principal, item.permission) && (item.applies?.(principal) ?? true),
+  )
   const roleLabel = principal.profession
     ? `${principal.profession[0]}${principal.profession.slice(1).toLowerCase()}`
     : ROLE_LABEL[principal.role]

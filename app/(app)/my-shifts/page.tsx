@@ -186,7 +186,9 @@ export default async function MyShiftsPage() {
         <p className="text-white/90">
           {nextShift
             ? `Next up: ${dateFmt.format(new Date(nextShift.startsAt))}, ${clock.format(new Date(nextShift.startsAt))} — ${countdown(new Date(nextShift.startsAt), now)}.`
-            : 'Nothing scheduled in the next five weeks.'}
+            : session.user.profession === null
+              ? 'Managers do not hold clinical shifts, so this page stays empty for you.'
+              : 'Nothing scheduled in the next five weeks.'}
         </p>
       </PageHero>
 
@@ -204,7 +206,12 @@ export default async function MyShiftsPage() {
         <h2 id="my-upcoming-heading" className="text-lg font-semibold text-foreground">Upcoming shifts</h2>
         {upcoming.length === 0 ? (
           <p className="rounded-card border border-dashed border-border p-4 text-sm text-muted-foreground">
-            You have nothing scheduled in this window. Visit the dashboard to claim a shift.
+            {/* Telling a manager to "claim a shift" pointed them at the one action
+                the rules refuse them — a shift requires a profession and they
+                have none (PROFESSION_NOT_REQUIRED). */}
+            {session.user.profession === null
+              ? 'Shifts are claimed by clinical staff. As a manager you assign them from the dashboard instead.'
+              : 'You have nothing scheduled in this window. Visit the dashboard to claim a shift.'}
           </p>
         ) : (
           <ul className="space-y-2">
