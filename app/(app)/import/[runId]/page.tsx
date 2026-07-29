@@ -2,13 +2,13 @@ import { notFound } from 'next/navigation'
 import { auth } from '@/auth'
 import { PageHero } from '@/components/page-hero'
 import { PaginationLinks } from '@/components/pagination-links'
-import { OutcomeBar, type OutcomeCounts } from '@/components/import/outcome-bar'
+import { OutcomeBar } from '@/components/import/outcome-bar'
 import { OutcomeFilter } from '@/components/import/outcome-filter'
 import { ReportTable } from '@/components/import/report-table'
 import { ImportLegend } from '@/components/import/import-legend'
 import { IMPORT_LEGEND } from '@/lib/import/legend'
 import { can, type Principal } from '@/lib/auth/permissions'
-import { importRowSchema, type ImportRowView } from '@/lib/contracts/imports'
+import { exactOutcomeCountsSchema, importRowSchema } from '@/lib/contracts/imports'
 import { internalFetch } from '@/lib/server/internal-fetch'
 
 interface RunSummary {
@@ -26,36 +26,6 @@ const dateFmt = new Intl.DateTimeFormat('en-GB', {
   day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
   timeZone: process.env.CLINIC_TZ ?? 'Europe/London',
 })
-
-/**
- * `ImportRun.stats.accepted` (from `lib/import/reconcile.ts`) deliberately
- * counts ACCEPTED and REPAIRED together — that's the right number for "how
- * many rows made it in," but the Report's stacked bar needs the two split
- * apart. Rather than re-deriving that split from a second source of truth,
- * this walks every row (the same `GET` the table itself paginates through,
- * just with `outcome` unset and a max page size) and counts outcomes
- * directly — exact regardless of how many pages the run has.
- */
-async function exactOutcomeCounts(runId: number): Promise<OutcomeCounts> {
-  const counts: OutcomeCounts = { accepted: 0, repaired: 0, merged: 0, rejected: 0, total: 0 }
-  let cursor: string | null = null
-  for (let page = 0; page < 100; page++) { // hard stop, not a realistic ceiling
-    const qs = new URLSearchParams({ limit: '100', ...(cursor ? { cursor } : {}) })
-    const res = await internalFetch(`/api/imports/${runId}?${qs.toString()}`)
-    if (!res.ok) break
-    const body = await res.json() as { items: { outcome: ImportRowView['outcome'] }[]; nextCursor: string | null }
-    for (const row of body.items) {
-      counts.total += 1
-      if (row.outcome === 'ACCEPTED') counts.accepted += 1
-      else if (row.outcome === 'REPAIRED') counts.repaired += 1
-      else if (row.outcome === 'MERGED') counts.merged += 1
-      else counts.rejected += 1
-    }
-    cursor = body.nextCursor
-    if (!cursor) break
-  }
-  return counts
-}
 
 export default async function ImportReportPage({
   params, searchParams,
@@ -78,15 +48,17 @@ export default async function ImportReportPage({
   const activeOutcome = outcome && (OUTCOMES as readonly string[]).includes(outcome) ? outcome : null
 
   const qs = new URLSearchParams({ limit: '25', ...(cursor ? { cursor } : {}), ...(activeOutcome ? { outcome: activeOutcome } : {}) })
-  const [pageRes, counts] = await Promise.all([
-    internalFetch(`/api/imports/${runId}?${qs.toString()}`),
-    exactOutcomeCounts(runId),
-  ])
+  const pageRes = await internalFetch(`/api/imports/${runId}?${qs.toString()}`)
   if (pageRes.status === 404) notFound()
   if (!pageRes.ok) throw new Error(`Failed to load import run ${runId} (${pageRes.status})`)
 
-  const body = await pageRes.json() as { run: RunSummary; items: unknown[]; nextCursor: string | null }
+  const body = await pageRes.json() as { run: RunSummary; outcomeCounts: unknown; items: unknown[]; nextCursor: string | null }
   const rows = body.items.map((r) => importRowSchema.parse(r))
+  // Whole-run counts (§lib/import/report.ts) — always unfiltered by
+  // `activeOutcome`, so the outcome bar and "% kept" gauge below describe
+  // the entire run even while the row table itself is filtered down to one
+  // outcome.
+  const counts = exactOutcomeCountsSchema.parse(body.outcomeCounts)
 
   const kept = counts.total - counts.rejected
   const gaugeValue = counts.total > 0 ? kept / counts.total : 1
