@@ -76,8 +76,14 @@ test.describe('keyboard navigation', () => {
     expect(passwordIndex).toBeGreaterThan(emailIndex)
 
     // No trap: consecutive tabs never land on the exact same element twice in a row.
+    // Destructured rather than indexed twice: `noUncheckedIndexedAccess` types
+    // every element access as possibly-undefined, and a bare `snapshots[i]!`
+    // would assert away exactly the bound this loop relies on.
     for (let i = 1; i < snapshots.length; i++) {
-      expect(snapshots[i].key, `focus stuck repeating ${snapshots[i].key}`).not.toBe(snapshots[i - 1].key)
+      const previous = snapshots[i - 1]
+      const current = snapshots[i]
+      if (!previous || !current) continue
+      expect(current.key, `focus stuck repeating ${current.key}`).not.toBe(previous.key)
     }
 
     assertClean(capture)
@@ -93,8 +99,14 @@ test.describe('keyboard navigation', () => {
     for (const s of snapshots) expect(s.visible, `${s.key} received focus but is not visible`).toBe(true)
     for (const s of snapshots) expect(s.hasVisibleIndicator, `${s.key} received focus with no visible indicator`).toBe(true)
 
+    // Destructured rather than indexed twice: `noUncheckedIndexedAccess` types
+    // every element access as possibly-undefined, and a bare `snapshots[i]!`
+    // would assert away exactly the bound this loop relies on.
     for (let i = 1; i < snapshots.length; i++) {
-      expect(snapshots[i].key, `focus stuck repeating ${snapshots[i].key}`).not.toBe(snapshots[i - 1].key)
+      const previous = snapshots[i - 1]
+      const current = snapshots[i]
+      if (!previous || !current) continue
+      expect(current.key, `focus stuck repeating ${current.key}`).not.toBe(previous.key)
     }
 
     // A real range of distinct controls was actually visited, not one widget

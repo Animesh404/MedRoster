@@ -21,11 +21,14 @@ test.describe('CSV import', () => {
     // clean + 29 repaired = 34 users, matching `tests/import/apply.test.ts`'s
     // own `user.count() === 34` assertion), plus 3 merged and 4 rejected of 41.
     const outcomeBar = page.getByRole('img', { name: /Accepted:/ })
-    const label = await outcomeBar.getAttribute('aria-label')
+    const label = (await outcomeBar.getAttribute('aria-label')) ?? ''
+    // The aria-label is the assertion target, so a missing one must fail loudly
+    // here rather than silently parsing to an empty count map below.
+    expect(label, 'outcome bar has no aria-label to assert on').not.toBe('')
     const counts = Object.fromEntries(
-      (label ?? '').split(', ').map((part) => {
+      label.split(', ').map((part) => {
         const [name, rest] = part.split(': ')
-        return [name, Number(rest.split(' of ')[0])]
+        return [name, Number((rest ?? '').split(' of ')[0])]
       }),
     ) as Record<'Accepted' | 'Repaired' | 'Merged' | 'Rejected', number>
     expect(counts.Accepted + counts.Repaired, `expected 34 accepted+repaired, got ${label}`).toBe(34)
