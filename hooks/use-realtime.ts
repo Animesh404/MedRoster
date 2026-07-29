@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createClient, type RealtimeChannel } from '@supabase/supabase-js'
 import type { OutboxEvent } from '@/lib/contracts/events'
+import { getClientEnv } from '@/lib/config/env'
 
 export function newMutationId(): string {
   return crypto.randomUUID().replace(/-/g, '').slice(0, 16)
@@ -26,38 +27,24 @@ export function shouldApply(event: OutboxEvent, ownMutationIds: Set<string>): bo
 }
 
 /**
- * The browser-safe Supabase key.
+ * Realtime config comes from the shared client env, which requires BOTH the url
+ * and the publishable key before reporting itself configured. A url without a
+ * key connects and then silently delivers nothing — worse than not connecting,
+ * because the UI would show itself live while missing every update.
  *
- * Supabase's newer `sb_publishable_...` key supersedes the legacy `anon` JWT and
- * goes in exactly the same client position, so this reads the publishable name
- * first and falls back to the legacy one for anyone still on an older project.
- *
- * Both are safe to expose — they are the browser-facing key and carry no more
- * authority than an anonymous visitor. The `sb_secret_...` key must NEVER appear
- * behind a `NEXT_PUBLIC_` name: Next inlines those into the client bundle.
+ * Absent either, the app falls back to polling, which works fully. That is also
+ * the correct behaviour against local Docker Postgres, which has no `realtime`
+ * schema and therefore never emits a broadcast at all.
  */
-const SUPABASE_KEY =
-  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-  ''
+const { supabaseUrl, supabasePublishableKey, realtimeConfigured } = getClientEnv()
 
-/**
- * True only when realtime is fully configured. Both halves are required: a url
- * without a key connects and then silently never delivers, which is worse than
- * not connecting at all, because the UI would show itself as live while missing
- * every update. Without both we fall back to polling, which the app supports
- * fully — local Docker Postgres has no `realtime` schema either way.
- */
-const HAS_SUPABASE = Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL) && Boolean(SUPABASE_KEY)
+// `createClient` throws synchronously — at MODULE LOAD, not just when a channel
+// is opened — the instant its url argument is an empty string, so it can only be
+// called when one is actually configured. Every call site below is gated on
+// `HAS_SUPABASE`, which is exactly when `supabase` is non-null here.
+const HAS_SUPABASE = realtimeConfigured
 
-// `createClient` throws synchronously — at MODULE LOAD, not just when a
-// channel is opened — the instant its url argument is an empty string, so
-// this can only be called at all when one is actually configured. Every
-// call site below is already gated on `HAS_SUPABASE`, which is exactly the
-// condition under which `supabase` is non-null here.
-const supabase = HAS_SUPABASE
-  ? createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, SUPABASE_KEY)
-  : null
+const supabase = HAS_SUPABASE ? createClient(supabaseUrl, supabasePublishableKey) : null
 
 /** How often a polling client re-checks `/api/events/since` when Supabase
  *  Realtime isn't configured. Short enough to feel live in a demo, long
