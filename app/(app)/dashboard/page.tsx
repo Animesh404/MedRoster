@@ -7,6 +7,7 @@ import { CoverageCharts } from '@/components/week-grid/coverage-charts'
 import { StatTiles } from '@/components/week-grid/stat-tiles'
 import { WeekGrid } from '@/components/week-grid/week-grid'
 import { WeekPicker } from '@/components/week-grid/week-picker'
+import { WeekRealtimeSync } from '@/components/realtime/week-realtime-sync'
 import { computeWeekAnalytics } from '@/lib/dashboard/week-analytics'
 import { decodeWeek, isoWeekParamSchema, type CompressedWeek } from '@/lib/contracts/week'
 import { isoWeekOf, weekBounds } from '@/lib/domain/time'
@@ -84,47 +85,55 @@ async function DashboardContent({ isoWeek }: { isoWeek: string }) {
   const gaugePercent = Math.round(analytics.gaugeValue * 100)
 
   return (
-    <div className="space-y-8">
-      <PageHero
-        eyebrow={`Coverage · ${isoWeek}`}
-        title={weekRangeLabel(bounds.start, bounds.end)}
-        gauge={{
-          value: analytics.gaugeValue,
-          label: `${gaugePercent}% of required headcount filled this week`,
-        }}
-      >
-        <WeekPicker isoWeek={isoWeek} />
-        <ul className="flex flex-wrap gap-x-5 gap-y-1 pt-1 text-sm text-white/90">
-          <li>
-            <span aria-hidden>{STATUS_STYLES.FULL.glyph}</span> {STATUS_STYLES.FULL.label}{' '}
-            <span className="tabular font-semibold">{analytics.fullCount}</span>
-          </li>
-          <li>
-            <span aria-hidden>{STATUS_STYLES.PARTIAL.glyph}</span> {STATUS_STYLES.PARTIAL.label}{' '}
-            <span className="tabular font-semibold">{analytics.partialCount}</span>
-          </li>
-          <li>
-            <span aria-hidden>{STATUS_STYLES.EMPTY.glyph}</span> {STATUS_STYLES.EMPTY.label}{' '}
-            <span className="tabular font-semibold">{analytics.emptyCount}</span>
-          </li>
-        </ul>
-      </PageHero>
+    // Wired into realtime (CRITICAL-1) so the plan's own acceptance
+    // scenario — "a nurse claims a shift, the manager's dashboard card
+    // updates without refresh" — actually happens: this is a plain server
+    // component with no client-held `WeekView` to reconcile, so `router.refresh()`
+    // re-running it against fresh data on the next non-echo event IS the
+    // reconciliation strategy (same as `/shifts/[id]`).
+    <WeekRealtimeSync isoWeek={isoWeek}>
+      <div className="space-y-8">
+        <PageHero
+          eyebrow={`Coverage · ${isoWeek}`}
+          title={weekRangeLabel(bounds.start, bounds.end)}
+          gauge={{
+            value: analytics.gaugeValue,
+            label: `${gaugePercent}% of required headcount filled this week`,
+          }}
+        >
+          <WeekPicker isoWeek={isoWeek} />
+          <ul className="flex flex-wrap gap-x-5 gap-y-1 pt-1 text-sm text-white/90">
+            <li>
+              <span aria-hidden>{STATUS_STYLES.FULL.glyph}</span> {STATUS_STYLES.FULL.label}{' '}
+              <span className="tabular font-semibold">{analytics.fullCount}</span>
+            </li>
+            <li>
+              <span aria-hidden>{STATUS_STYLES.PARTIAL.glyph}</span> {STATUS_STYLES.PARTIAL.label}{' '}
+              <span className="tabular font-semibold">{analytics.partialCount}</span>
+            </li>
+            <li>
+              <span aria-hidden>{STATUS_STYLES.EMPTY.glyph}</span> {STATUS_STYLES.EMPTY.label}{' '}
+              <span className="tabular font-semibold">{analytics.emptyCount}</span>
+            </li>
+          </ul>
+        </PageHero>
 
-      <section aria-labelledby="analytics-heading" className="space-y-4">
-        <h2 id="analytics-heading" className="sr-only">
-          Coverage analytics
-        </h2>
-        <StatTiles analytics={analytics} />
-        <CoverageCharts analytics={analytics} />
-      </section>
+        <section aria-labelledby="analytics-heading" className="space-y-4">
+          <h2 id="analytics-heading" className="sr-only">
+            Coverage analytics
+          </h2>
+          <StatTiles analytics={analytics} />
+          <CoverageCharts analytics={analytics} />
+        </section>
 
-      <section aria-labelledby="week-grid-heading" className="space-y-4">
-        <h2 id="week-grid-heading" className="text-lg font-semibold text-foreground">
-          This week&rsquo;s shifts
-        </h2>
-        <WeekGrid week={week} />
-      </section>
-    </div>
+        <section aria-labelledby="week-grid-heading" className="space-y-4">
+          <h2 id="week-grid-heading" className="text-lg font-semibold text-foreground">
+            This week&rsquo;s shifts
+          </h2>
+          <WeekGrid week={week} />
+        </section>
+      </div>
+    </WeekRealtimeSync>
   )
 }
 

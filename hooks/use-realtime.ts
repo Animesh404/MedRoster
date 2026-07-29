@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createClient, type RealtimeChannel } from '@supabase/supabase-js'
 import type { OutboxEvent } from '@/lib/contracts/events'
-import type { WeekStaff, WeekView } from '@/lib/contracts/week'
 
 export function newMutationId(): string {
   return crypto.randomUUID().replace(/-/g, '').slice(0, 16)
@@ -24,51 +23,6 @@ export function newMutationId(): string {
  */
 export function shouldApply(event: OutboxEvent, ownMutationIds: Set<string>): boolean {
   return !event.mutationId || !ownMutationIds.has(event.mutationId)
-}
-
-/** Pure reducer, so the reconciliation rules are testable without a socket. */
-export function applyEvent(week: WeekView, event: OutboxEvent): WeekView {
-  const p = event.payload as Record<string, never>
-  const shiftId = Number(p.shiftId)
-
-  switch (event.type) {
-    case 'shift.claimed': {
-      const userId = Number(p.userId)
-      // `noUncheckedIndexedAccess` widens `p.profession`'s indexed-access type
-      // to include `undefined`; the cast is a type-level fix only — `p` is
-      // still read exactly the same way at runtime.
-      const staff = week.staff.some((s) => s.id === userId)
-        ? week.staff
-        : [...week.staff, { id: userId, name: String(p.name), profession: p.profession as unknown as WeekStaff['profession'] }]
-      return {
-        ...week, staff,
-        shifts: week.shifts.map((s) =>
-          s.id === shiftId && !s.claimantIds.includes(userId)
-            ? { ...s, claimantIds: [...s.claimantIds, userId] }
-            : s),
-      }
-    }
-    case 'shift.unclaimed': {
-      const userId = Number(p.userId)
-      return {
-        ...week,
-        shifts: week.shifts.map((s) =>
-          s.id === shiftId ? { ...s, claimantIds: s.claimantIds.filter((id) => id !== userId) } : s),
-      }
-    }
-    case 'shift.claims_dropped': {
-      const dropped = new Set((p.dropped as unknown as { userId: number }[]).map((d) => d.userId))
-      return {
-        ...week,
-        shifts: week.shifts.map((s) =>
-          s.id === shiftId ? { ...s, claimantIds: s.claimantIds.filter((id) => !dropped.has(id)) } : s),
-      }
-    }
-    case 'shift.deleted':
-      return { ...week, shifts: week.shifts.filter((s) => s.id !== shiftId) }
-    default:
-      return week
-  }
 }
 
 /** True when realtime isn't configured at all — the app must still work
@@ -114,20 +68,45 @@ export function useRealtimeWeek(
     const topic = `week:${isoWeek}`
     let cancelled = false
 
+    // `EventOutbox.id` is one global sequence across every topic, so a
+    // cursor left over from whichever topic this hook instance was
+    // subscribed to before (a prop change on an already-mounted instance —
+    // e.g. `/shifts/[id]` navigating to a shift in a different week) would
+    // make the NEW topic's own early events look "already seen" and skip
+    // them (MINOR-9). Starting every fresh effect run — mount or topic
+    // switch alike — at '0' means the very first `catchUp` below always
+    // sees the topic's full history, never a stale high-water mark.
+    lastIdRef.current = '0'
+
+    // That "full history" first catch-up is itself the other bug (IMPORTANT-2):
+    // a topic that has been live for a while can hold dozens of events, and
+    // dispatching every one of them to `onEvent` the instant this component
+    // mounts turns into a `router.refresh()` storm with zero real activity
+    // (measured: 46 events -> 46 refreshes). The first catch-up's only job is
+    // to learn where "now" is; there is no client-held view to reconcile yet,
+    // so nothing from it should reach `onEvent`/`onResync`. Every catch-up
+    // after that — the next poll tick, a reconnect, a tab regaining focus —
+    // dispatches normally.
+    let firstCatchUp = true
+
     /** Fetches everything missed since lastId — broadcast has no history (§7.1). */
     async function catchUp() {
       const res = await fetch(
         `/api/events/since?topic=${encodeURIComponent(topic)}&id=${lastIdRef.current}`)
       if (!res.ok || cancelled) return
       const body = await res.json() as { events: OutboxEvent[]; lastId: string; truncated: boolean }
+      const isSeeding = firstCatchUp
+      firstCatchUp = false
 
       if (body.truncated) {
         // Too far behind to reconcile event-by-event; refetch rather than diverge.
         lastIdRef.current = body.lastId
-        handlersRef.current.onResync()
+        if (!isSeeding) handlersRef.current.onResync()
         return
       }
-      for (const event of body.events) handlersRef.current.onEvent(event)
+      if (!isSeeding) {
+        for (const event of body.events) handlersRef.current.onEvent(event)
+      }
       lastIdRef.current = body.lastId
     }
 

@@ -37,9 +37,12 @@ export function useRegisterMutation(): (mutationId: string) => void {
  * "mine" set to this single hook instance (one topic) sidesteps that
  * entirely rather than trying to key a shared set on (topic, mutationId).
  *
- * `applyEvent`/`shouldApply` remain the pure, directly-unit-tested reducer
- * (`tests/ui/realtime.test.ts`); this component is the thin, harder-to-unit-test
- * wiring around them.
+ * There is no client-held `WeekView` here to patch event-by-event — this is
+ * the ONLY reconciliation strategy in play, not a fallback alongside a
+ * reducer. `shouldApply` remains the pure, directly-unit-tested predicate
+ * (`tests/ui/realtime.test.ts`) that decides whether an event is this
+ * instance's own already-applied echo; everything that clears it just
+ * triggers the refresh above.
  */
 export function WeekRealtimeSync({ isoWeek, children }: { isoWeek: string; children: ReactNode }) {
   const router = useRouter()
