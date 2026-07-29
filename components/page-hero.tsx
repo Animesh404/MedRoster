@@ -20,7 +20,11 @@ export function PageHero({
 }: {
   eyebrow: string
   title: string
-  gauge?: { value: number; label: string }
+  /** `className` lets a screen recolour the gauge for its own headline
+   *  status (e.g. the shift detail page turns it amber while partly
+   *  staffed) — defaults to the plain white every other hero uses, so
+   *  existing call sites are unaffected. */
+  gauge?: { value: number; label: string; className?: string }
   children?: ReactNode
   className?: string
 }) {
@@ -48,10 +52,10 @@ export function PageHero({
            * tree, so this never doubles up for assistive tech.
            */}
           <div className="shrink-0 md:hidden">
-            <RadialGauge value={gauge.value} label={gauge.label} size={64} className="text-white" />
+            <RadialGauge value={gauge.value} label={gauge.label} size={64} className={gauge.className ?? 'text-white'} />
           </div>
           <div className="hidden shrink-0 md:block">
-            <RadialGauge value={gauge.value} label={gauge.label} size={96} className="text-white" />
+            <RadialGauge value={gauge.value} label={gauge.label} size={96} className={gauge.className ?? 'text-white'} />
           </div>
         </>
       ) : null}

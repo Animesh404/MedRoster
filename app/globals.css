@@ -170,3 +170,72 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/*
+ * Task 19 interaction motion (§ optimistic claiming). Kept intentionally
+ * small and named by what they mean, not what they look like — the
+ * `prefers-reduced-motion` block above already neutralises every one of
+ * these (it resets *, so a new keyframe/transition needs no opt-out).
+ */
+
+/* An optimistic claim/release flipping — 150ms ease-out, the same rhythm
+   `.slot--filled`/`.slot--empty` below use so a shift's slot circles and its
+   claim button never feel like they're on two different clocks. */
+.slot-fill-transition {
+  transition:
+    background-color 150ms ease-out,
+    border-color 150ms ease-out;
+}
+
+.slot {
+  transition:
+    background-color 150ms ease-out,
+    opacity 150ms ease-out;
+}
+
+/* Rollback: 3px, twice, then the message fades in — never the other way
+   round, and never simultaneous, so the shake reads as "that didn't work"
+   before the reason appears. */
+@keyframes claim-rollback-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-3px); }
+  40% { transform: translateX(3px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(3px); }
+}
+.claim-rollback-shake {
+  animation: claim-rollback-shake 300ms ease-in-out;
+}
+
+@keyframes claim-rollback-message-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.claim-rollback-message {
+  /* `both` holds opacity 0 through the delay, so this never flashes
+     visible before the shake above has finished. */
+  animation: claim-rollback-message-in 200ms ease-out 300ms both;
+}
+
+/* A bar growing from its baseline on first paint. Applied once per bar via
+   a plain class + inline `animation-delay` stagger — never replayed on data
+   refresh, because a CSS animation only fires when the element itself is
+   first inserted into the DOM, not on every re-render. */
+@keyframes grow-from-baseline {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+.grow-from-baseline {
+  transform-origin: bottom;
+  animation: grow-from-baseline 300ms ease-out both;
+}
+
+/* Someone else's claim landing on a card you're looking at — pulses once.
+   Never applied to your own action (see components/shift usage sites). */
+@keyframes claim-pulse-border {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--brand-primary) 0%, transparent); }
+  40% { box-shadow: 0 0 0 3px color-mix(in oklab, var(--brand-primary) 45%, transparent); }
+}
+.claim-pulse-border {
+  animation: claim-pulse-border 600ms ease-out;
+}

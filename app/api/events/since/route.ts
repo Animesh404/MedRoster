@@ -30,6 +30,7 @@ export const GET = withAuth('shift:read', async (req) => {
     events: rows.map((e) => ({
       id: e.id.toString(), type: e.type,
       payload: e.payload, mutationId: e.mutationId,
+      createdAt: e.createdAt.toISOString(),
     })),
     lastId: rows.length > 0 ? rows[rows.length - 1]!.id.toString() : parsed.data.id,
     /** True when the page was capped — the client should resync rather than assume it caught up. */
