@@ -7,6 +7,7 @@ import { WeekGrid } from '@/components/week-grid/week-grid'
 import { WeekPicker } from '@/components/week-grid/week-picker'
 import { WeekRealtimeSync } from '@/components/realtime/week-realtime-sync'
 import { computeWeekAnalytics } from '@/lib/dashboard/week-analytics'
+import { resolveDefaultWeek } from '@/lib/dashboard/nearest-week'
 import { decodeWeek, isoWeekParamSchema, type CompressedWeek } from '@/lib/contracts/week'
 import { isoWeekOf, weekBounds } from '@/lib/domain/time'
 import { STATUS_STYLES } from '@/lib/ui/tokens'
@@ -31,15 +32,17 @@ function weekRangeLabel(start: Date, end: Date): string {
 }
 
 /**
- * Falls back to the current week for anything that isn't a shape-valid ISO
- * week string — a missing param, a typo, garbage from a hand-edited URL.
- * Shape-valid-but-out-of-range weeks (e.g. "2025-W53") pass this check and
- * are instead caught by `weekBounds` inside `DashboardContent`, which is
- * where the "degrade gracefully" behaviour lives.
+ * Returns the requested week when one was actually asked for, or null to mean
+ * "no week requested — pick a sensible default".
+ *
+ * A typo or garbage from a hand-edited URL counts as "not requested" and falls
+ * through to the default. Shape-valid-but-out-of-range weeks (e.g. "2025-W53")
+ * pass this check deliberately and are caught by `weekBounds` inside
+ * `DashboardContent`, which is where the degrade-gracefully behaviour lives.
  */
-function resolveRequestedWeek(raw: string | undefined): string {
+function resolveRequestedWeek(raw: string | undefined): string | null {
   if (raw && isoWeekParamSchema.safeParse(raw).success) return raw
-  return isoWeekOf(new Date())
+  return null
 }
 
 export default async function DashboardPage({
@@ -48,7 +51,10 @@ export default async function DashboardPage({
   searchParams: Promise<{ week?: string }>
 }) {
   const params = await searchParams
-  const isoWeek = resolveRequestedWeek(params.week)
+  const requested = resolveRequestedWeek(params.week)
+  // Only when nothing was asked for. An explicitly requested empty week still
+  // renders as empty — that is a true answer about that week.
+  const isoWeek = requested ?? (await resolveDefaultWeek())
 
   // Deliberately NOT wrapped in `<Suspense>` (this page had one, keyed on
   // `isoWeek`, until this fix): a `<Suspense>` boundary that has already
