@@ -1,3 +1,11 @@
+// Loaded here, not assumed already loaded: `prisma db seed` / `prisma migrate
+// reset` run this file as a child process that inherits whatever the Prisma
+// CLI already put in `process.env` (via `prisma.config.ts`'s own `dotenv/config`
+// import), but `npm run db:seed` invokes `tsx prisma/seed.ts` directly with no
+// Prisma CLI in front of it — nothing has loaded `.env` in that case, and
+// `lib/db/client.ts` then fails with "DATABASE_URL_DEV must be set" even
+// though `.env` sets it right there on disk.
+import 'dotenv/config'
 import bcrypt from 'bcryptjs'
 import { prisma } from '@/lib/db/client'
 import { runSeed } from '@/lib/seed/run-seed'
