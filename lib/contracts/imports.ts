@@ -41,6 +41,17 @@ export const importStatsSchema = z.object({
   total: z.number().int(),
 })
 
+/** ACCEPTED/REPAIRED split out, unlike `importStatsSchema` — see
+ *  `getExactOutcomeCounts` (lib/import/report.ts) for why the Import Report
+ *  needs this shape instead. */
+export const exactOutcomeCountsSchema = z.object({
+  accepted: z.number().int(),
+  repaired: z.number().int(),
+  merged: z.number().int(),
+  rejected: z.number().int(),
+  total: z.number().int(),
+})
+
 export const importIssueSchema = z.object({
   code: z.string(),
   severity: z.enum(['REPAIR', 'FATAL']),

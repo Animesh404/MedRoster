@@ -4,6 +4,7 @@ import { withAuth, errorResponse, type AuthedContext } from '@/lib/auth/with-aut
 import { createAppError } from '@/lib/domain/errors'
 import { paginate } from '@/lib/db/paginate'
 import { pageQuerySchema, parseDbId } from '@/lib/contracts/common'
+import { getExactOutcomeCounts } from '@/lib/import/report'
 
 const OUTCOMES = ['ACCEPTED', 'REPAIRED', 'MERGED', 'REJECTED'] as const
 
@@ -35,21 +36,27 @@ export const GET = withAuth('import:read', async (req: Request, ctx: AuthedConte
   const { cursor, limit } = parsedQuery.data
   const outcome = url.searchParams.get('outcome')
 
-  const page = await paginate({
-    limit, cursor,
-    findMany: (args) => prisma.importRowResult.findMany({
-      ...args,
-      where: {
-        importRunId: runId,
-        // Fail safe on an unrecognised outcome value (IMP-5): an unknown
-        // string falls through to "no filter" rather than being coerced
-        // into a Prisma enum it can't represent.
-        ...(outcome && (OUTCOMES as readonly string[]).includes(outcome)
-          ? { outcome: outcome as (typeof OUTCOMES)[number] } : {}),
-      },
-      select: { id: true, rowNumber: true, rawRow: true, outcome: true, issues: true },
+  const [page, outcomeCounts] = await Promise.all([
+    paginate({
+      limit, cursor,
+      findMany: (args) => prisma.importRowResult.findMany({
+        ...args,
+        where: {
+          importRunId: runId,
+          // Fail safe on an unrecognised outcome value (IMP-5): an unknown
+          // string falls through to "no filter" rather than being coerced
+          // into a Prisma enum it can't represent.
+          ...(outcome && (OUTCOMES as readonly string[]).includes(outcome)
+            ? { outcome: outcome as (typeof OUTCOMES)[number] } : {}),
+        },
+        select: { id: true, rowNumber: true, rawRow: true, outcome: true, issues: true },
+      }),
     }),
-  })
+    // Computed over every row the run has, independent of the row report's
+    // own pagination — see getExactOutcomeCounts for why the Report page
+    // must not derive this by walking paginated pages itself.
+    getExactOutcomeCounts(prisma, runId),
+  ])
 
-  return NextResponse.json({ run, ...page })
+  return NextResponse.json({ run, outcomeCounts, ...page })
 })

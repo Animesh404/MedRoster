@@ -300,6 +300,34 @@ describe('GET /api/imports/:runId', () => {
     expect(rejectedBody.items).toHaveLength(4)
   })
 
+  it('includes exact whole-run outcomeCounts, unaffected by the page limit or an outcome filter', async () => {
+    await asManager()
+    const db = await getTestDb()
+    const result = runStaffImport(readFileSync('staff.csv', 'utf8'))
+    const runId = await db.$transaction((tx) =>
+      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv', passwordHash: 'x' }))
+
+    // A tiny page size (limit=5) must not shrink outcomeCounts along with
+    // the row page it accompanies — see lib/import/report.ts.
+    const res = await importGet(
+      new Request(`http://localhost/api/imports/${runId}?limit=5`),
+      { params: Promise.resolve({ runId: String(runId) }) },
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json() as { outcomeCounts: { accepted: number; repaired: number; merged: number; rejected: number; total: number }; items: unknown[] }
+    expect(body.items).toHaveLength(5) // the page itself IS limited...
+    expect(body.outcomeCounts).toEqual({ accepted: 5, repaired: 29, merged: 3, rejected: 4, total: 41 }) // ...outcomeCounts is not
+
+    // Filtering the row page down to just REJECTED must not filter
+    // outcomeCounts down too — it always describes the whole run.
+    const filtered = await importGet(
+      new Request(`http://localhost/api/imports/${runId}?limit=5&outcome=REJECTED`),
+      { params: Promise.resolve({ runId: String(runId) }) },
+    )
+    const filteredBody = await filtered.json() as { outcomeCounts: unknown }
+    expect(filteredBody.outcomeCounts).toEqual(body.outcomeCounts)
+  })
+
   it('returns 400 for a non-numeric run id rather than a 500', async () => {
     await asManager()
     const res = await importGet(
