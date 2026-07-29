@@ -50,7 +50,14 @@ export function ImportUploadForm() {
       <div className="flex flex-wrap items-end gap-3">
         <label className="space-y-1 text-xs font-medium text-muted-foreground">
           What kind of file
-          <Select value={kind} onValueChange={(v) => setKind(v as 'STAFF' | 'SHIFT')}>
+          {/* `items` is what makes `Select.Value` render the label ("Staff
+           *  roster") instead of the raw stored value ("STAFF") — see the
+           *  same fix in `AssignControl` for the full explanation. */}
+          <Select
+            value={kind}
+            onValueChange={(v) => setKind(v as 'STAFF' | 'SHIFT')}
+            items={{ STAFF: 'Staff roster', SHIFT: 'Shift schedule' }}
+          >
             <SelectTrigger aria-label="File kind"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="STAFF">Staff roster</SelectItem>
