@@ -88,7 +88,14 @@ const FAQ = [
 ]
 
 export default async function MarketingPage() {
-  const stats = await getRosterStats().catch(() => null)
+  // A bare `.catch(() => null)` here rendered three em-dashes and said nothing
+  // anywhere — the page looked like a clinic with no staff and no shifts, and
+  // the only trace was Prisma's own log line. Log it as ours, and drop the band
+  // entirely below rather than showing a row of dashes.
+  const stats = await getRosterStats().catch((err: unknown) => {
+    console.error('[marketing] roster stats unavailable:', err)
+    return null
+  })
 
   return (
     <div className="flex flex-col">
@@ -153,14 +160,18 @@ export default async function MarketingPage() {
         </ul>
       </section>
 
-      {/* Stats band */}
-      <section className="mt-16 bg-brand-deep px-4 py-14 text-white sm:px-6">
-        <div className="mx-auto grid max-w-4xl gap-8 text-center sm:grid-cols-3">
-          <Stat value={stats?.staffCount} label="Staff on the roster" />
-          <Stat value={stats?.shiftCount} label="Shifts on the board" />
-          <Stat value={stats?.claimCount} label="Shifts already claimed" />
-        </div>
-      </section>
+      {/* Stats band — omitted entirely when the numbers cannot be read, since a
+          row of placeholders reads as "this clinic has nobody" rather than as a
+          failure. The rest of the page stands on its own without it. */}
+      {stats && (
+        <section className="mt-16 bg-brand-deep px-4 py-14 text-white sm:px-6">
+          <div className="mx-auto grid max-w-4xl gap-8 text-center sm:grid-cols-3">
+            <Stat value={stats.staffCount} label="Staff on the roster" />
+            <Stat value={stats.shiftCount} label="Shifts on the board" />
+            <Stat value={stats.claimCount} label="Shifts already claimed" />
+          </div>
+        </section>
+      )}
 
       {/* Feature block 1 */}
       <section className="mx-auto mt-20 w-full max-w-5xl px-4 sm:px-6">
@@ -296,10 +307,12 @@ export default async function MarketingPage() {
   )
 }
 
-function Stat({ value, label }: { value: number | undefined; label: string }) {
+// `value` is required: the band only renders when the numbers actually loaded,
+// so there is no absent case left for this component to paper over.
+function Stat({ value, label }: { value: number; label: string }) {
   return (
     <div>
-      <p className="font-mono text-4xl font-semibold tabular">{value ?? '—'}</p>
+      <p className="font-mono text-4xl font-semibold tabular">{value.toLocaleString()}</p>
       <p className="mt-1 text-sm text-white/70">{label}</p>
     </div>
   )
