@@ -229,13 +229,3 @@ body {
   transform-origin: bottom;
   animation: grow-from-baseline 300ms ease-out both;
 }
-
-/* Someone else's claim landing on a card you're looking at — pulses once.
-   Never applied to your own action (see components/shift usage sites). */
-@keyframes claim-pulse-border {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--brand-primary) 0%, transparent); }
-  40% { box-shadow: 0 0 0 3px color-mix(in oklab, var(--brand-primary) 45%, transparent); }
-}
-.claim-pulse-border {
-  animation: claim-pulse-border 600ms ease-out;
-}

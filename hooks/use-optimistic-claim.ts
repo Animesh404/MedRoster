@@ -27,7 +27,18 @@ export interface UseOptimisticClaimResult {
  */
 export function useOptimisticClaim(
   shiftId: number,
-  params: { claimed: boolean; userId: number; onMutationStart?: (mutationId: string) => void },
+  params: {
+    claimed: boolean
+    userId: number
+    onMutationStart?: (mutationId: string) => void
+    /** Called once the request succeeds — lets a caller re-fetch the server
+     *  component tree (`AssignControl`/`EditDialog`/`DeleteDialog` all do the
+     *  same on their own success paths). Without it, a released shift stays
+     *  in a stale list (e.g. `/my-shifts`) until a manual reload, and a
+     *  claim/release racing the realtime poll only settles once that poll
+     *  happens to land. */
+    onSuccess?: () => void
+  },
 ): UseOptimisticClaimResult {
   const [optimistic, setOptimistic] = useState(params.claimed)
   const [pending, setPending] = useState(false)
@@ -64,7 +75,9 @@ export function useOptimisticClaim(
       const body = await res.json().catch(() => null) as { error?: { message: string } } | null
       setOptimistic(previous)   // roll back
       setError(body?.error?.message ?? 'Something went wrong. Please try again.')
+      return
     }
+    params.onSuccess?.()
   }
 
   return {

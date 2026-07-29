@@ -8,6 +8,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
 } from '@/components/ui/dialog'
 import { newMutationId } from '@/hooks/use-realtime'
+import { useRegisterMutation } from '@/components/realtime/week-realtime-sync'
 import { PROFESSION_LABELS } from '@/lib/domain/profession'
 
 interface ShiftHolder {
@@ -31,6 +32,7 @@ interface DeletePreview {
  */
 export function DeleteDialog({ shiftId }: { shiftId: number }) {
   const router = useRouter()
+  const registerMutation = useRegisterMutation()
   const [open, setOpen] = useState(false)
   const [preview, setPreview] = useState<DeletePreview | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -55,6 +57,7 @@ export function DeleteDialog({ shiftId }: { shiftId: number }) {
     setBusy(true)
     setError(null)
     const mutationId = newMutationId()
+    registerMutation(mutationId)
     const params = new URLSearchParams({
       expectedVersion: String(preview.version), claimsToken: preview.claimsToken, mutationId,
     })

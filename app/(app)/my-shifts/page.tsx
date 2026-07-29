@@ -1,9 +1,11 @@
+import type { ReactNode } from 'react'
 import { auth } from '@/auth'
 import { PageHero } from '@/components/page-hero'
 import { StatTile } from '@/components/stat-tile'
 import { ClaimButton } from '@/components/shift/claim-button'
 import { HoursChart, type WeekHours } from '@/components/my-shifts/hours-chart'
 import { DropNoticeBanner, type DropNotice } from '@/components/my-shifts/drop-notice'
+import { WeekRealtimeSync } from '@/components/realtime/week-realtime-sync'
 import { decodeWeek, type CompressedWeek, type WeekShift } from '@/lib/contracts/week'
 import { durationMinutes, isoWeekOf, weekBounds } from '@/lib/domain/time'
 import { PROFESSION_LABELS } from '@/lib/domain/profession'
@@ -31,6 +33,32 @@ function windowWeeks(now: Date): string[] {
     weeks.push(isoWeekOf(d))
   }
   return weeks
+}
+
+/**
+ * Nests one `<WeekRealtimeSync>` per visible week (CRITICAL-1) rather than
+ * writing a new multi-topic subscription hook: this page already spans
+ * `windowWeeks` (1 back / 5 forward), `WeekRealtimeSync` already renders
+ * `{children}` unchanged and turns any non-echo event on ITS topic into a
+ * `router.refresh()`, so reusing it as-is means a change on ANY visible
+ * week — most importantly a `shift.claims_dropped`/`shift.deleted` naming
+ * this user, the single most consequential event for a staff member —
+ * refreshes the whole page. The trade-off, stated plainly: nesting means
+ * `useRegisterMutation()` (used by this page's own release `ClaimButton`)
+ * only ever reaches the INNERMOST instance's own-mutation set, so a
+ * release's echo is only suppressed on that one topic rather than the
+ * shift's actual topic — harmless here specifically because `ClaimButton`
+ * already calls `router.refresh()` on success itself (IMPORTANT-6), so the
+ * page is never depending on realtime echo suppression to reflect its own
+ * action. A dedicated multi-topic hook would avoid that wrinkle but is a
+ * materially bigger change for a page that has no per-shift mutations of
+ * its own beyond release.
+ */
+function withWeekRealtimeSync(weeks: string[], children: ReactNode): ReactNode {
+  return weeks.reduceRight(
+    (acc, isoWeek) => <WeekRealtimeSync key={isoWeek} isoWeek={isoWeek}>{acc}</WeekRealtimeSync>,
+    children,
+  )
 }
 
 function countdown(target: Date, now: Date): string {
@@ -80,6 +108,37 @@ export default async function MyShiftsPage() {
   const upcoming = myShifts.filter((s) => new Date(s.startsAt) > now)
   const nextShift = upcoming[0] ?? null
 
+  // A dropped shift's own date/time (MINOR-8) — a staff member can't tell
+  // WHICH shift they lost from the drop event's payload alone (dropped/
+  // deleted events carry the shift's id and who/why, never its schedule).
+  // Live shifts (still in `decodedWeeks`) are authoritative; a genuinely
+  // deleted shift is gone from there but never from its own event history
+  // (`EventOutbox` has no FK to `Shift`), so `shift.created`/`shift.edited`
+  // for that same id is the best-effort fallback — `shift.edited` wins when
+  // both exist since it carries the shift's last known time, not its
+  // original one.
+  const shiftTimesById = new Map<number, { startsAt: string; endsAt: string | null }>()
+  for (const week of decodedWeeks) {
+    if (!week) continue
+    for (const s of week.shifts) shiftTimesById.set(s.id, { startsAt: s.startsAt, endsAt: s.endsAt })
+  }
+  const fallbackShiftTimesById = new Map<number, { startsAt: string; endsAt: string | null }>()
+  for (const events of eventLists) {
+    for (const event of events) {
+      const payload = event.payload as Record<string, unknown>
+      const shiftId = Number(payload.shiftId)
+      if (event.type === 'shift.edited') {
+        fallbackShiftTimesById.set(shiftId, { startsAt: String(payload.startsAt), endsAt: String(payload.endsAt) })
+      } else if (event.type === 'shift.created' && !fallbackShiftTimesById.has(shiftId)) {
+        fallbackShiftTimesById.set(shiftId, { startsAt: String(payload.startsAt), endsAt: null })
+      }
+    }
+  }
+  function shiftTimeFor(shiftId: number): { shiftStartsAt: string | null; shiftEndsAt: string | null } {
+    const time = shiftTimesById.get(shiftId) ?? fallbackShiftTimesById.get(shiftId)
+    return { shiftStartsAt: time?.startsAt ?? null, shiftEndsAt: time?.endsAt ?? null }
+  }
+
   // Drop notices — the shift no longer showing up in `myShifts` at all is
   // exactly what makes this the one thing a staff member cannot be left to
   // discover only by noticing a shift missing on the day (§my-shifts brief).
@@ -92,15 +151,23 @@ export default async function MyShiftsPage() {
       if (event.type === 'shift.claims_dropped') {
         const dropped = payload.dropped as { userId: number; reason: string }[]
         const mine = dropped.find((d) => d.userId === userId)
-        if (mine) notices.push({ shiftId: Number(payload.shiftId), reason: mine.reason, at: event.createdAt ?? null, kind: 'dropped' })
+        if (mine) {
+          const shiftId = Number(payload.shiftId)
+          notices.push({
+            shiftId, reason: mine.reason, at: event.createdAt ?? null, kind: 'dropped',
+            ...shiftTimeFor(shiftId),
+          })
+        }
       } else if (event.type === 'shift.deleted') {
         const affected = payload.affectedUserIds as number[]
         if (affected.includes(userId)) {
+          const shiftId = Number(payload.shiftId)
           notices.push({
-            shiftId: Number(payload.shiftId),
+            shiftId,
             reason: 'A manager deleted this shift.',
             at: event.createdAt ?? null,
             kind: 'deleted',
+            ...shiftTimeFor(shiftId),
           })
         }
       }
@@ -111,7 +178,7 @@ export default async function MyShiftsPage() {
   const totalHoursWindow = Math.round(hoursPerWeek.reduce((sum, w) => sum + w.hours, 0) * 10) / 10
   const thisWeekHours = hoursPerWeek.find((w) => w.isCurrent)?.hours ?? 0
 
-  return (
+  return withWeekRealtimeSync(weeks, (
     <div className="space-y-8">
       <DropNoticeBanner notices={notices} />
 
@@ -158,5 +225,5 @@ export default async function MyShiftsPage() {
         )}
       </section>
     </div>
-  )
+  ))
 }
