@@ -29,6 +29,10 @@ export const outboxEventSchema = z.object({
   type: z.string(),
   payload: z.record(z.string(), z.unknown()),
   mutationId: z.string().nullable(),
+  /** Optional so the reducer test literals (Task 19) that omit it stay valid —
+   *  callers that only need reconciliation never look at this; the shift
+   *  detail page's Activity timeline is the one consumer that does. */
+  createdAt: z.string().optional(),
 })
 
 export type OutboxEvent = z.infer<typeof outboxEventSchema>
