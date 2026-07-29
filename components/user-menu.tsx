@@ -5,6 +5,7 @@ import { signOutAction } from '@/app/(app)/actions'
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -34,9 +35,21 @@ export function UserMenu({ name, email, roleLabel }: { name: string; email: stri
         </span>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuLabel className="truncate font-mono text-xs font-normal">{email}</DropdownMenuLabel>
+        {/* Base UI's `Menu.GroupLabel` (what `DropdownMenuLabel` renders)
+         *  requires a `Menu.Group` ancestor — without one it throws
+         *  "MenuGroupContext is missing" the instant the popup actually
+         *  mounts (i.e. on the first real click, never during SSR), which
+         *  crashed the whole menu and made sign-out unreachable. */}
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className="truncate font-mono text-xs font-normal">{email}</DropdownMenuLabel>
+        </DropdownMenuGroup>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => void signOutAction()}>
+        {/* Base UI's `Menu.Item` only recognises `onClick` — it has no
+         *  Radix-style `onSelect` prop. `onSelect` type-checks anyway
+         *  because React's own `DOMAttributes<div>` declares a (native,
+         *  input/textarea-only) `onSelect` event for every element, so
+         *  `tsc` never flagged this; it simply never fired. */}
+        <DropdownMenuItem onClick={() => void signOutAction()}>
           <LogOut aria-hidden />
           Sign out
         </DropdownMenuItem>
