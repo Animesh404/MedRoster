@@ -65,7 +65,16 @@ export function AssignControl({
 
   return (
     <div className="flex flex-wrap items-start gap-2">
-      <Select value={selected} onValueChange={(v) => setSelected(v as string | null)}>
+      {/* `items` is what makes `Select.Value` render the candidate's NAME
+       *  instead of the raw string `value` it stores internally (their id)
+       *  — without it, the trigger shows e.g. "33" after a pick instead of
+       *  "Anya Haddad", a base-ui default a manager would only ever see by
+       *  actually opening this dropdown in a browser. */}
+      <Select
+        value={selected}
+        onValueChange={(v) => setSelected(v as string | null)}
+        items={candidates.map((c) => ({ value: String(c.id), label: c.name }))}
+      >
         <SelectTrigger size="sm" aria-label={`Assign a ${PROFESSION_LABELS[profession].toLowerCase()}`}>
           <SelectValue placeholder="Assign staff…" />
         </SelectTrigger>
