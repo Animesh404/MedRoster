@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useCallback, useContext, useRef, type ReactNode } from 'react'
+import { createContext, startTransition, useCallback, useContext, useRef, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { useRealtimeWeek, shouldApply } from '@/hooks/use-realtime'
 
@@ -54,11 +54,16 @@ export function WeekRealtimeSync({ isoWeek, children }: { isoWeek: string; child
   }, [])
 
   useRealtimeWeek(isoWeek, {
+    // Wrapped in `startTransition`: this fires from a `setInterval` tick (the
+    // polling fallback) or a broadcast callback, never from a React event
+    // handler, so it needs to explicitly opt into React's transition
+    // scheduling for `router.refresh()`'s update to be treated as a real
+    // pending navigation rather than a stray effect.
     onEvent: (event) => {
-      if (shouldApply(event, ownMutationIds.current)) router.refresh()
+      if (shouldApply(event, ownMutationIds.current)) startTransition(() => router.refresh())
     },
     // Too far behind to reconcile event-by-event — refetch rather than diverge (§7.1).
-    onResync: () => router.refresh(),
+    onResync: () => startTransition(() => router.refresh()),
   })
 
   return (

@@ -1,8 +1,6 @@
-import { Suspense } from 'react'
 import Link from 'next/link'
 import { headers } from 'next/headers'
 import { PageHero } from '@/components/page-hero'
-import { DashboardSkeleton } from '@/components/skeletons'
 import { CoverageCharts } from '@/components/week-grid/coverage-charts'
 import { StatTiles } from '@/components/week-grid/stat-tiles'
 import { WeekGrid } from '@/components/week-grid/week-grid'
@@ -12,6 +10,12 @@ import { computeWeekAnalytics } from '@/lib/dashboard/week-analytics'
 import { decodeWeek, isoWeekParamSchema, type CompressedWeek } from '@/lib/contracts/week'
 import { isoWeekOf, weekBounds } from '@/lib/domain/time'
 import { STATUS_STYLES } from '@/lib/ui/tokens'
+
+// Explicit, rather than relying solely on `headers()` inside `DashboardContent`
+// to imply it (see login/page.tsx for the same pattern): this route MUST
+// render fresh on every request, including a `router.refresh()` triggered by
+// `WeekRealtimeSync`'s realtime/poll reconciliation (§CRITICAL-1).
+export const dynamic = 'force-dynamic'
 
 const CLINIC_TZ = process.env.CLINIC_TZ ?? 'Europe/London'
 const dayMonthFmt = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', timeZone: CLINIC_TZ })
@@ -46,11 +50,20 @@ export default async function DashboardPage({
   const params = await searchParams
   const isoWeek = resolveRequestedWeek(params.week)
 
-  return (
-    <Suspense key={isoWeek} fallback={<DashboardSkeleton />}>
-      <DashboardContent isoWeek={isoWeek} />
-    </Suspense>
-  )
+  // Deliberately NOT wrapped in `<Suspense>` (this page had one, keyed on
+  // `isoWeek`, until this fix): a `<Suspense>` boundary that has already
+  // resolved swallows a subsequent `router.refresh()` silently — the server
+  // genuinely re-renders `DashboardContent` with fresh data (verified via a
+  // one-off server-side log during diagnosis: a fresh execution timestamp on
+  // every refresh) and the browser receives a 200, but React never commits
+  // the update through the settled boundary, so the page just sits stale
+  // forever. Confirmed by contrast: `/my-shifts`, which has no `<Suspense>`
+  // at all, applies the exact same kind of realtime-triggered refresh
+  // correctly. This is exactly the plan's own acceptance scenario — "a nurse
+  // claims a shift, the manager's dashboard updates without a reload" — so
+  // losing the loading-skeleton flash during week-to-week navigation is the
+  // right trade: a working live update matters far more than that skeleton.
+  return <DashboardContent isoWeek={isoWeek} />
 }
 
 async function DashboardContent({ isoWeek }: { isoWeek: string }) {
