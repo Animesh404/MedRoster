@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import {describe, expect, it} from 'vitest'
 import { ALL_PERMISSIONS, ROLE_PERMISSIONS, can } from '@/lib/auth/permissions'
 
 const manager = { id: 1, role: 'MANAGER' as const, profession: null }

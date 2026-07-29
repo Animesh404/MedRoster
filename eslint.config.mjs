@@ -13,6 +13,18 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  {
+    // Playwright fixtures are declared as `async ({ page }, use) => { … use(x) }`.
+    // That `use` is Playwright's fixture-provider callback, not React's `use`
+    // hook, but rules-of-hooks matches on the bare identifier and flags every
+    // fixture as a hook called outside a component. The rule has nothing to say
+    // about a browser-driver file, so it is off here rather than worked around
+    // by renaming Playwright's own API.
+    files: ["e2e/**/*.ts"],
+    rules: {
+      "react-hooks/rules-of-hooks": "off",
+    },
+  },
 ]);
 
 export default eslintConfig;

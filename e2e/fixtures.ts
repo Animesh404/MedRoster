@@ -21,7 +21,6 @@ type Fixtures = {
 }
 
 export const test = base.extend<Fixtures>({
-  // eslint-disable-next-line no-empty-pattern
   capture: async ({ page }, use) => {
     const capture: ConsoleCapture = { errors: [], warnings: [], pageErrors: [], failedRequests: [] }
 
