@@ -18,5 +18,12 @@ export default defineConfig({
     // hit this same "Hook timed out in 10000ms" — proof it's host contention,
     // not a race in the code under test.
     hookTimeout: 60_000,
+    // One test file at a time. Every DB-backed file boots its own Testcontainers
+    // Postgres, and running several at once contends for host CPU and disk hard
+    // enough to time out container startup — a flake with nothing to do with the
+    // code under test. The whole suite still finishes in well under a minute, and
+    // `npm test` being reliable on a stranger's machine is worth more than the
+    // parallel speedup.
+    fileParallelism: false,
   },
 })

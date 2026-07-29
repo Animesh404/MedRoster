@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'feat/**']
+  pull_request:
+    branches: [main]
+
+concurrency:
+  # A newer push supersedes an in-flight run on the same ref. Testcontainers
+  # runs are not cheap and a superseded result is not worth waiting for.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: types, lint, tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      # Tests never touch these: every DB-backed file gets a throwaway
+      # Testcontainers Postgres and sets its own DATABASE_URL, which wins over
+      # APP_ENV by design. DATABASE_URL_DEV is set anyway so config resolution
+      # has something valid to return for the non-DB paths.
+      APP_ENV: development
+      DATABASE_URL_DEV: postgresql://postgres:postgres@localhost:5432/medroster
+      AUTH_SECRET: ci-only-secret-not-used-against-real-data
+      AUTH_TRUST_HOST: 'true'
+      CLINIC_TZ: Europe/London
+      SEED_PASSWORD: medroster123
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Generate Prisma client
+        # The client is generated, not committed, so typecheck and tests both
+        # need this before they can resolve @prisma/client.
+        run: npx prisma generate
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npx eslint .
+
+      - name: Test
+        # Testcontainers needs a Docker daemon, which ubuntu-latest provides.
+        # vitest.config.ts pins fileParallelism:false — several Postgres
+        # containers starting at once contend hard enough to time out startup,
+        # which reads as a mysterious red build rather than a real failure.
+        run: npm test
+
+      - name: Build
+        # Runs last: it is the slowest step and the one least likely to catch
+        # something the other three missed.
+        run: npm run build
