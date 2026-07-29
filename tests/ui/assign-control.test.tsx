@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { AssignControl } from '@/components/shift/assign-control'
@@ -27,10 +27,18 @@ describe('AssignControl', () => {
     )
 
     await userEvent.click(screen.getByRole('combobox', { name: /assign a nurse/i }))
-    await userEvent.click(screen.getByRole('option', { name: 'Anya Haddad' }))
 
-    const combo = screen.getByRole('combobox', { name: /assign a nurse/i })
-    expect(combo).toHaveTextContent('Anya Haddad')
-    expect(combo).not.toHaveTextContent('33')
+    // base-ui mounts the listbox in a portal after an animation frame, so the
+    // option is not queryable the instant the trigger is clicked, and the
+    // trigger's own label settles asynchronously after the selection commits.
+    // Racing either of those made this test intermittently red.
+    const option = await screen.findByRole('option', { name: 'Anya Haddad' })
+    await userEvent.click(option)
+
+    await waitFor(() => {
+      const combo = screen.getByRole('combobox', { name: /assign a nurse/i })
+      expect(combo).toHaveTextContent('Anya Haddad')
+      expect(combo).not.toHaveTextContent('33')
+    })
   })
 })
