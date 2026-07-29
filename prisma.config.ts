@@ -25,5 +25,12 @@ export default defineConfig({
   },
   migrations: {
     path: 'prisma/migrations',
+    // Prisma 7 reads the seed command from here, not from package.json's
+    // legacy `"prisma": { "seed": ... }` field — that field is silently
+    // ignored once a prisma.config.ts exists, which had left both
+    // `npx prisma db seed` and the auto-seed step of `prisma migrate reset`
+    // printing "No seed command configured" instead of running
+    // `prisma/seed.ts` (still reachable directly via `npm run db:seed`).
+    seed: 'tsx prisma/seed.ts',
   },
 })
