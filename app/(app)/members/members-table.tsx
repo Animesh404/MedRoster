@@ -77,6 +77,15 @@ export function MembersTable({
   // Keyed by 'form' for the invite form, or a member id for a per-row action,
   // so only the button(s) whose own request is in flight disable.
   const [busy, setBusy] = useState<Record<string, boolean>>({})
+  // True only when the mount-time status fetch below has failed — every row
+  // is still showing page.tsx's placeholder `status: 'active'`, so a
+  // no-account or deactivated member reads as "Active" with a live
+  // Deactivate button. Deactivating a no-account member sets deactivatedAt
+  // on someone who never had an account, and there is no reactivation
+  // feature in this branch — that misclick has no UI path back. Gates only
+  // the per-row action buttons; the invite form above does not depend on
+  // any row's status, so it stays usable.
+  const [staleStatus, setStaleStatus] = useState(false)
 
   /** Re-fetches the roster and replaces `members` wholesale. A failure here
    *  (a bad status, or the request itself rejecting) is surfaced the same
@@ -113,13 +122,17 @@ export function MembersTable({
         if (ignore) return
         if (!res.ok) {
           setError(STALE_STATUS_MESSAGE)
+          setStaleStatus(true)
           return
         }
         const body = (await res.json().catch(() => null)) as { members?: Member[] } | null
         if (ignore) return
         if (body?.members) setMembers(body.members)
       } catch {
-        if (!ignore) setError(STALE_STATUS_MESSAGE)
+        if (!ignore) {
+          setError(STALE_STATUS_MESSAGE)
+          setStaleStatus(true)
+        }
       }
     }
 
@@ -321,16 +334,34 @@ export function MembersTable({
                 </TableCell>
                 <TableCell className="space-x-2">
                   {member.status === 'no-account' && (
-                    <Button type="button" size="sm" variant="outline" disabled={rowBusy} onClick={() => invite(member)}>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={rowBusy || staleStatus}
+                      onClick={() => invite(member)}
+                    >
                       Invite
                     </Button>
                   )}
                   {member.status === 'invited' && (
                     <>
-                      <Button type="button" size="sm" variant="outline" disabled={rowBusy} onClick={() => resend(member)}>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={rowBusy || staleStatus}
+                        onClick={() => resend(member)}
+                      >
                         Resend
                       </Button>
-                      <Button type="button" size="sm" variant="outline" disabled={rowBusy} onClick={() => revoke(member)}>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={rowBusy || staleStatus}
+                        onClick={() => revoke(member)}
+                      >
                         Revoke
                       </Button>
                     </>
@@ -340,7 +371,7 @@ export function MembersTable({
                       type="button"
                       size="sm"
                       variant="destructive"
-                      disabled={rowBusy}
+                      disabled={rowBusy || staleStatus}
                       onClick={() => deactivate(member)}
                     >
                       Deactivate

@@ -176,8 +176,17 @@ enable_refresh_token_rotation = true
 # Allows refresh tokens to be reused after expiry, up to the specified interval in seconds.
 # Requires enable_refresh_token_rotation = true.
 refresh_token_reuse_interval = 10
-# Allow/disallow new user signups to your project.
-enable_signup = true
+# Allow/disallow new user signups to your project. Disabled: MedRoster
+# accounts only ever come from a manager's invite (lib/members/invite.ts) or
+# an admin-created seed row, never self-registration. Leaving this true let
+# a stranger POST /auth/v1/signup a guessable staff.csv address, confirmed,
+# with only the publishable key — the roster gate then denies them access
+# (so this was never an access bypass), but it permanently bricks that
+# address for a real invite: lib/members/invite.ts's `existing.authUserId
+# === null` branch calls inviteUserByEmail, which now returns `email_exists`
+# forever, the same failure app/auth/callback/route.ts:52-56 already deletes
+# a stray OAuth-created auth user to prevent on that path.
+enable_signup = false
 # Allow/disallow anonymous sign-ins to your project.
 enable_anonymous_sign_ins = false
 # Allow/disallow testing manual linking of accounts
@@ -229,7 +238,19 @@ double_confirm_changes = true
 # If enabled, users need to confirm their email address before signing in.
 enable_confirmations = false
 # If enabled, users will need to reauthenticate or have logged in recently to change their password.
-secure_password_change = false
+#
+# Enabled: without this, updateUser({ password }) only needs a live session,
+# not proof of the current password. app/auth/reset-password/page.tsx and
+# app/auth/accept-invite/page.tsx both render SetPasswordForm for ANY request
+# carrying a session — they check `!data.user`, not that the session came
+# from a recovery/invite token — so an unattended signed-in browser could be
+# walked to /auth/reset-password and turned into a full account takeover with
+# set-password-form.tsx's no-current-password updateUser call. Both
+# legitimate paths still work with this on: a recovery/invite-link session is
+# itself a fresh authentication, and ChangePasswordForm
+# (app/(app)/account/change-password-form.tsx) does its own
+# signInWithPassword immediately before updateUser.
+secure_password_change = true
 # Controls the minimum amount of time that must pass before sending another signup confirmation or password reset email.
 max_frequency = "1s"
 # Number of characters used in the email OTP.

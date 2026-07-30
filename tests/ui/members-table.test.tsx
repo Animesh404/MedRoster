@@ -104,6 +104,32 @@ describe('MembersTable', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/out of date/i)
   })
 
+  // page.tsx renders every row with a placeholder status: 'active' until the
+  // mount fetch replaces it. If that fetch fails, every row still reads
+  // "Active" with a live Deactivate button — including rows that are really
+  // no-account or deactivated. Deactivating a no-account member sets
+  // deactivatedAt on someone who never had an account, with no reactivation
+  // feature to undo it, so the per-row action buttons must disable rather
+  // than stay clickable against data known to be stale.
+  it('disables per-row action buttons when the mount-time fetch fails, but leaves the invite form usable', async () => {
+    const placeholderMembers = MEMBERS.map((m) => ({ ...m, status: 'active' as const }))
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      JSON.stringify({ error: { code: 'BUSY', message: 'nope' } }),
+      { status: 503 },
+    ))))
+
+    render(<MembersTable initialMembers={placeholderMembers} currentUserId={1} />)
+    await screen.findByRole('alert')
+
+    // Dana is currentUserId 1 (self), so no Deactivate button is expected
+    // there regardless — assert on Ivy's row instead, which placeholder
+    // data renders as 'active' and would otherwise show a live Deactivate.
+    const ivyRow = screen.getByText('Ivy Bell').closest('tr')!
+    expect(within(ivyRow).getByRole('button', { name: /deactivate/i })).toBeDisabled()
+
+    expect(screen.getByRole('button', { name: /send invite/i })).toBeEnabled()
+  })
+
   it('surfaces an error, without an unhandled rejection, when a mutation fetch rejects outright', async () => {
     vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
       if (init?.method === 'POST') return Promise.reject(new Error('network down'))
