@@ -36,7 +36,7 @@ function req(url: string, headers?: Record<string, string>) {
 async function asManager() {
   const db = await getTestDb()
   const manager = await db.user.create({
-    data: { email: 'mgr@c.test', name: 'Manager', passwordHash: 'x', role: 'MANAGER', profession: null },
+    data: { email: 'mgr@c.test', name: 'Manager', role: 'MANAGER', profession: null },
   })
   session = { user: { id: manager.id, email: manager.email, name: manager.name, role: 'MANAGER', profession: null } }
   return manager
@@ -73,7 +73,7 @@ describe('GET /api/weeks/:isoWeek', () => {
     await asManager()
     const db = await getTestDb()
     const nurse = await db.user.create({
-      data: { email: 'n@c.test', name: 'N', passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+      data: { email: 'n@c.test', name: 'N', role: 'STAFF', profession: 'NURSE' },
     })
     const shift = await db.shift.create({
       data: {

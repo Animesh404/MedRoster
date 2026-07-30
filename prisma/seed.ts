@@ -6,7 +6,6 @@
 // `lib/db/client.ts` then fails with "DATABASE_URL_DEV must be set" even
 // though `.env` sets it right there on disk.
 import 'dotenv/config'
-import bcrypt from 'bcryptjs'
 import { createClient } from '@supabase/supabase-js'
 import { prisma } from '@/lib/db/client'
 import { runSeed } from '@/lib/seed/run-seed'
@@ -16,8 +15,7 @@ import { ensureAuthAccounts, type AuthAdminPort } from '@/lib/seed/auth-accounts
 const SEED_PASSWORD = process.env.SEED_PASSWORD ?? 'medroster123'
 
 async function main(): Promise<void> {
-  const passwordHash = await bcrypt.hash(SEED_PASSWORD, 10)
-  const result = await runSeed(prisma, { passwordHash })
+  const result = await runSeed(prisma)
 
   console.log('staff  ', result.staffStats)
   console.log('shifts ', result.shiftStats)

@@ -84,11 +84,11 @@ async function seedProfiles() {
   const db = await getTestDb()
   await db.user.createMany({
     data: [
-      { email: 'manager@clinicmail.test', name: 'Dana Okonkwo', role: 'MANAGER', profession: null, passwordHash: 'x' },
-      { email: 'chloe.hussain@clinicmail.test', name: 'Chloe Hussain', role: 'STAFF', profession: 'DOCTOR', passwordHash: 'x' },
-      { email: 'ivy.bell@clinicmail.test', name: 'Ivy Bell', role: 'STAFF', profession: 'NURSE', passwordHash: 'x' },
-      { email: 'hiro.petrova@clinicmail.test', name: 'Hiro Petrova', role: 'STAFF', profession: 'RECEPTIONIST', passwordHash: 'x' },
-      { email: 'nobody@clinicmail.test', name: 'Not A Demo', role: 'STAFF', profession: 'NURSE', passwordHash: 'x' },
+      { email: 'manager@clinicmail.test', name: 'Dana Okonkwo', role: 'MANAGER', profession: null },
+      { email: 'chloe.hussain@clinicmail.test', name: 'Chloe Hussain', role: 'STAFF', profession: 'DOCTOR' },
+      { email: 'ivy.bell@clinicmail.test', name: 'Ivy Bell', role: 'STAFF', profession: 'NURSE' },
+      { email: 'hiro.petrova@clinicmail.test', name: 'Hiro Petrova', role: 'STAFF', profession: 'RECEPTIONIST' },
+      { email: 'nobody@clinicmail.test', name: 'Not A Demo', role: 'STAFF', profession: 'NURSE' },
     ],
   })
   return db
@@ -195,7 +195,7 @@ describe('ensureAuthAccounts', () => {
   it('skips a demo email with no profile rather than throwing', async () => {
     const db = await getTestDb()
     await db.user.create({
-      data: { email: 'manager@clinicmail.test', name: 'Dana', role: 'MANAGER', profession: null, passwordHash: 'x' },
+      data: { email: 'manager@clinicmail.test', name: 'Dana', role: 'MANAGER', profession: null },
     })
     const { port } = fakeAdmin()
 

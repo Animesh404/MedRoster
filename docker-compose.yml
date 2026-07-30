@@ -19,7 +19,6 @@ services:
       db: { condition: service_healthy }
     environment:
       DATABASE_URL: postgresql://medroster:medroster@db:5432/medroster
-      AUTH_SECRET: local-dev-secret-change-me
       CLINIC_TZ: Europe/London
       SEED_PASSWORD: medroster123
     ports: ['3000:3000']

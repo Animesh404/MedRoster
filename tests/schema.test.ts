@@ -252,6 +252,10 @@ describe('applied migration SQL (folded to net state)', () => {
   it('records when a member was deactivated', () => {
     expect(state.columns.get('User')?.has('deactivatedAt')).toBe(true)
   })
+
+  it('no longer stores a local password hash', () => {
+    expect(state.columns.get('User')?.has('passwordHash')).toBe(false)
+  })
 })
 
 describe('applyMigrations folding semantics (regression guard)', () => {

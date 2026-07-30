@@ -47,7 +47,7 @@ const noParams = { params: Promise.resolve({}) }
 async function asManager() {
   const db = await getTestDb()
   const manager = await db.user.create({
-    data: { email: 'mgr@c.test', name: 'Manager', passwordHash: 'x', role: 'MANAGER', profession: null },
+    data: { email: 'mgr@c.test', name: 'Manager', role: 'MANAGER', profession: null },
   })
   session = { user: { id: manager.id, email: manager.email, name: manager.name, role: 'MANAGER', profession: null } }
   return manager
@@ -167,7 +167,7 @@ describe('PATCH /api/shifts/:id — version + claimsToken threading', () => {
     // A claim lands on the shift AFTER the preview was taken but BEFORE the
     // manager confirms — the exact race `claimsToken` exists to catch.
     const nurse = await db.user.create({
-      data: { email: 'race-nurse@c.test', name: 'Race Nurse', passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+      data: { email: 'race-nurse@c.test', name: 'Race Nurse', role: 'STAFF', profession: 'NURSE' },
     })
     await db.claim.create({ data: { shiftId: shift.id, userId: nurse.id } })
 

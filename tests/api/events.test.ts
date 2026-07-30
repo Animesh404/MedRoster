@@ -37,7 +37,7 @@ const noParams = { params: Promise.resolve({}) }
 async function asManager() {
   const db = await getTestDb()
   const manager = await db.user.create({
-    data: { email: 'mgr@c.test', name: 'Manager', passwordHash: 'x', role: 'MANAGER', profession: null },
+    data: { email: 'mgr@c.test', name: 'Manager', role: 'MANAGER', profession: null },
   })
   session = { user: { id: manager.id, email: manager.email, name: manager.name, role: 'MANAGER', profession: null } }
   return manager
@@ -67,7 +67,7 @@ describe('event outbox replay', () => {
     const { db, shift } = await setup()
     for (let i = 0; i < 3; i++) {
       const n = await db.user.create({
-        data: { email: `n${i}@c.test`, name: `N${i}`, passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+        data: { email: `n${i}@c.test`, name: `N${i}`, role: 'STAFF', profession: 'NURSE' },
       })
       await assignClaim({ db, shiftId: shift.id, userId: n.id, actorId: n.id })
     }
@@ -84,7 +84,7 @@ describe('event outbox replay', () => {
   it('carries the mutationId through so the originator can drop its own echo', async () => {
     const { db, shift } = await setup()
     const n = await db.user.create({
-      data: { email: 'n@c.test', name: 'N', passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+      data: { email: 'n@c.test', name: 'N', role: 'STAFF', profession: 'NURSE' },
     })
     await assignClaim({ db, shiftId: shift.id, userId: n.id, actorId: n.id, mutationId: 'abcd1234efgh' })
 
@@ -96,7 +96,7 @@ describe('event outbox replay', () => {
   it('writes no event when the mutation is rejected', async () => {
     const { db, shift } = await setup()
     const doctor = await db.user.create({
-      data: { email: 'd@c.test', name: 'D', passwordHash: 'x', role: 'STAFF', profession: 'DOCTOR' },
+      data: { email: 'd@c.test', name: 'D', role: 'STAFF', profession: 'DOCTOR' },
     })
     const result = await assignClaim({ db, shiftId: shift.id, userId: doctor.id, actorId: doctor.id })
 
@@ -110,10 +110,10 @@ describe('GET /api/events/since', () => {
     await asManager()
     const { db, shift } = await setup()
     const n1 = await db.user.create({
-      data: { email: 'n1@c.test', name: 'N1', passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+      data: { email: 'n1@c.test', name: 'N1', role: 'STAFF', profession: 'NURSE' },
     })
     const n2 = await db.user.create({
-      data: { email: 'n2@c.test', name: 'N2', passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+      data: { email: 'n2@c.test', name: 'N2', role: 'STAFF', profession: 'NURSE' },
     })
     await assignClaim({ db, shiftId: shift.id, userId: n1.id, actorId: n1.id })
     const first = await db.eventOutbox.findFirstOrThrow()
@@ -161,7 +161,7 @@ describe('GET /api/events/since', () => {
     await asManager()
     const { db, shift } = await setup()
     const n = await db.user.create({
-      data: { email: 'n@c.test', name: 'N', passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+      data: { email: 'n@c.test', name: 'N', role: 'STAFF', profession: 'NURSE' },
     })
     await assignClaim({ db, shiftId: shift.id, userId: n.id, actorId: n.id })
 
