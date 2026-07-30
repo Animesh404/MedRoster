@@ -30,9 +30,16 @@ afterEach(() => {
 process.env.SUPABASE_SERVICE_ROLE_KEY ??= 'test-service-role-key'
 process.env.APP_URL ??= 'http://localhost:3000'
 
-// resolveDatabase() falls back to this only when DATABASE_URL is unset. Every
-// DB-backed test file gets a throwaway Testcontainers DATABASE_URL, which wins
-// by precedence — so this exists purely so getServerEnv() can resolve in tests
-// that never touch a database. A bogus host is deliberate: if anything ever
-// does try to connect through it, it fails loudly rather than silently.
+// This is what resolveDatabase() actually resolves to for every test in the
+// process — not a fallback that some other value usually beats. Testcontainers
+// (tests/helpers/db.ts) only ever sets DATABASE_URL in the CHILD process it
+// spawns for `prisma migrate deploy`; it never touches this process's own
+// process.env. So DATABASE_URL stays unset here and APP_ENV=development
+// (the default) always sends resolveDatabase() to DATABASE_URL_DEV. This
+// value exists solely so getServerEnv() can construct at all — every DB-backed
+// test talks to Postgres through the `prisma` client tests/helpers/db.ts
+// builds directly off the Testcontainers connection string, never through
+// this URL. It is deliberately unreachable so that anything which does try
+// to connect through it fails loudly rather than silently finding a real
+// database.
 process.env.DATABASE_URL_DEV ??= 'postgresql://unused:unused@127.0.0.1:1/unused'
