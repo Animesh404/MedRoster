@@ -70,11 +70,28 @@ page (a later milestone) real people to invite.
 > under both staff `999` and `105`, and the lower id won. That decision is visible
 > in the import report.
 
+## Members and invites
+
+Managers invite colleagues from `/members`. An invite creates the Supabase Auth account and
+emails a link; the invitee follows it, sets a password, and lands on `/dashboard` — no
+signup form, because accounts are never self-service. Locally those emails never leave the
+machine: they land in Mailpit at <http://127.0.0.1:54324>, readable without a real inbox.
+
+Two things only an operator can do, and the feature is inert without them:
+
+- **Configure custom SMTP** in the Supabase dashboard before inviting anyone real. The
+  built-in mailer is capped near 2 emails/hour and only delivers to addresses on the
+  project's own team — invites to real people will silently never arrive.
+- **Disable "Allow new users to sign up"** in the dashboard. This gates **OAuth (Google)
+  sign-in only** — an unknown email is refused. Magic link is gated separately in code
+  (`shouldCreateUser: false`), not by this setting, so leaving it enabled does not open
+  magic link to strangers.
+
 ## Test
 
 ```bash
-npm test          # 441 unit + integration tests
-npm run test:e2e  # 27 browser specs, real Chrome via Playwright
+npm test          # 614 unit + integration tests
+npm run test:e2e  # 30 browser specs, real Chrome via Playwright
 ```
 
 `npm test` needs Docker — the concurrency and persistence suites boot throwaway

@@ -79,3 +79,33 @@ perspective. A client that retries a `BUSY` is safe (the transaction never ran),
 client that retries after a genuine timeout mid-transaction could still double-submit.
 The unique constraint on `(shiftId, userId)` catches that today; a mutation-id-keyed
 dedup would be the fuller answer.
+
+## No reactivation for a deactivated member
+
+**Status:** open, by design for now. Surfaced by the final review of the account-lifecycle
+work (2026-07-31).
+
+`deactivateMember` sets `User.deactivatedAt`, bans the Supabase user, and releases future
+claims. Nothing reverses it. A deactivated row renders with no action buttons, and
+re-inviting does not clear `deactivatedAt` — so an invite sent to a deactivated member is
+accepted by Supabase, the invitee sets a password, and `/auth/confirm` then refuses them
+with "This account is no longer active."
+
+Deliberately out of scope for that plan, but two consequences are worth knowing:
+
+- A misclick on **Deactivate** is not undoable through the UI. The members page now disables
+  row actions when its status fetch fails, which removes the most likely way to hit this by
+  accident, but the underlying one-way door remains.
+- `revokeInvite` is not restricted to pending invites: `DELETE /api/members/{id}/invite` on
+  an accepted, active member deletes their Supabase auth user. The UI only offers it for
+  `status === 'invited'`, but the API is the real boundary and it does not check.
+
+A reactivation feature should clear `deactivatedAt`, unban the Supabase user, and leave
+released claims released (they belong to whoever took them since).
+
+## Members list is unpaginated past 1000 accounts
+
+`app/api/members/route.ts` calls `listUsers({ perPage: 1000 })` and joins in memory. Past
+1000 Supabase auth users, real members silently render as "No account" — a wrong answer, not
+an error. Fine at ~35 staff; a landmine at scale. Note the `adminPort()` factory is
+duplicated across two route files, so a paging fix has to be made in both.

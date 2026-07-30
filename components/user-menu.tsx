@@ -1,6 +1,7 @@
 'use client'
 
-import { LogOut } from 'lucide-react'
+import { LogOut, Settings } from 'lucide-react'
+import Link from 'next/link'
 import { signOutAction } from '@/app/(app)/actions'
 import {
   DropdownMenu,
@@ -43,6 +44,10 @@ export function UserMenu({ name, email, roleLabel }: { name: string; email: stri
         <DropdownMenuGroup>
           <DropdownMenuLabel className="truncate font-mono text-xs font-normal">{email}</DropdownMenuLabel>
         </DropdownMenuGroup>
+        <DropdownMenuItem render={<Link href="/account" />}>
+          <Settings aria-hidden />
+          Account
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         {/* Base UI's `Menu.Item` only recognises `onClick` — it has no
          *  Radix-style `onSelect` prop. `onSelect` type-checks anyway

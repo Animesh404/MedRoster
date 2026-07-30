@@ -215,9 +215,27 @@ is not configured.
 A Google-linked member can add a password later from account settings (§5.3) — `updateUser`
 adds one where none exists — but is never blocked on doing so.
 
-**Remaining empirical check** (step 7 of §7): confirm observed behaviour matches this reading
-against the local stack, in particular that the unconfirmed email identity is removed on link.
-Source analysis, not observation, is the basis for this section.
+**Empirical check, as observed (Task 11):** partially confirmed, partially still unverified.
+
+Confirmed against the running local stack: emailed links carry `token_hash` to
+`/auth/confirm` (not GoTrue's default fragment-token `/verify`), a stranger requesting a
+magic link gets `422 otp_disabled` with no email sent, an invited member gets `200` and a
+`/auth/confirm?...&type=magiclink&next=/dashboard` link, and `additional_redirect_urls` is
+an exact-match allow-list including scheme. Setting a password does not create an `email`
+identity, and an admin-created invite (no password yet) does have one — the reason
+`hasPassword` was removed as a derived signal in Task 9.
+
+The Google half — an invited-but-unaccepted user completing a Google sign-in resolving to
+`LinkAccount` against the same uid, with the unconfirmed `email` identity removed — remains
+**unverified**. Google OAuth credentials are not configured anywhere in this project's local
+stack: `supabase/config.toml` has no `[auth.external.google]` block, and the running
+`supabase_auth` container has no corresponding client id/secret in its environment. Without
+credentials there is no way to drive a real Google sign-in through the local instance, so
+this half of the section stands on the source reading in §5.4.1 alone, not on direct
+observation. Anyone wiring up real Google OAuth credentials locally should re-run the check
+described at the top of this section (invite an address, leave it unaccepted, complete a
+Google sign-in for that same address, then inspect `auth.users`/`auth.identities` for that
+email) before relying on this behaviour in production.
 
 ### 5.5 Deactivation
 

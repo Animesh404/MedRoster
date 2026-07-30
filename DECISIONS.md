@@ -173,3 +173,17 @@ A `Notification` row per affected user, with `readAt`, would survive pruning,
 support a proper unread badge, and give a natural place to hang email later. It's
 a small model and I'd rather have built it than the second week-payload
 optimisation.
+
+## Deactivating a member releases their future shifts, not their past ones
+
+Offboarding revokes the Supabase session, marks the profile `deactivatedAt`, and
+deletes that person's claims on shifts that have not started yet — those slots
+reopen on the dashboard immediately, which is the entire point of recording that
+someone has left. Claims on shifts that have already started are kept: they are a
+record of who worked, and deleting them would rewrite history to make a finished
+shift look understaffed.
+
+The alternative — refusing to deactivate until a manager reassigns every held
+shift — was rejected. It makes offboarding a multi-step chore at exactly the
+moment someone has already walked out, and it leaves the roster claiming cover
+that will not arrive.
