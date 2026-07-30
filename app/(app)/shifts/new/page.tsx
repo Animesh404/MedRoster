@@ -1,13 +1,13 @@
 import { notFound } from 'next/navigation'
-import { auth } from '@/auth'
+import { currentSessionUser } from '@/lib/auth/session'
 import { PageHero } from '@/components/page-hero'
 import { NewShiftForm } from '@/components/shift/new-shift-form'
 import { can, type Principal } from '@/lib/auth/permissions'
 
 export default async function NewShiftPage() {
-  const session = await auth()
-  if (!session?.user) notFound() // middleware already guards this route
-  const principal: Principal = { id: session.user.id, role: session.user.role, profession: session.user.profession }
+  const session = await currentSessionUser()
+  if (!session) notFound() // middleware already guards this route
+  const principal: Principal = session.principal
 
   // Defence in depth (§app/(app)/layout.tsx): the nav already hides "New
   // shift" from staff (`can`, same catalogue the API enforces), but a typed

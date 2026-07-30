@@ -45,6 +45,7 @@ interface MigrationState {
   readonly tables: ReadonlyMap<string, string>
   readonly indexes: ReadonlyMap<string, string>
   readonly constraints: ReadonlyMap<string, string>
+  readonly columns: ReadonlyMap<string, ReadonlySet<string>>
 }
 
 function stripSqlComments(sql: string): string {
@@ -67,6 +68,14 @@ const CREATE_INDEX_RE = /^CREATE (?:UNIQUE )?INDEX "([^"]+)" ON /
 const DROP_INDEX_RE = /^DROP INDEX (?:IF EXISTS )?"([^"]+)"$/i
 const ADD_CONSTRAINT_RE = /^ALTER TABLE "[^"]+" ADD CONSTRAINT "([^"]+)"/
 const DROP_CONSTRAINT_RE = /^ALTER TABLE "[^"]+" DROP CONSTRAINT "([^"]+)"$/i
+const ADD_COLUMN_RE = /^ALTER TABLE "([^"]+)" ADD COLUMN\s+/i
+const DROP_COLUMN_RE = /^ALTER TABLE "([^"]+)" DROP COLUMN\s+/i
+// Prisma emits multiple ADD COLUMN / DROP COLUMN clauses comma-joined inside a
+// single ALTER TABLE statement when a schema change touches more than one
+// column on the same table (e.g. adding two columns at once). These match
+// every clause in the statement, not just the first.
+const ADD_COLUMN_NAME_RE = /ADD COLUMN\s+(?:IF NOT EXISTS\s+)?"([^"]+)"/gi
+const DROP_COLUMN_NAME_RE = /DROP COLUMN\s+(?:IF EXISTS\s+)?"([^"]+)"/gi
 
 /**
  * Pure fold over a sequence of migration.sql file contents (in the order
@@ -79,13 +88,17 @@ const DROP_CONSTRAINT_RE = /^ALTER TABLE "[^"]+" DROP CONSTRAINT "([^"]+)"$/i
  * This is deliberately minimal, test infrastructure rather than a SQL parser:
  * it only understands the handful of DDL shapes Prisma's migration generator
  * emits and that the assertions in this file need — CREATE/DROP TABLE,
- * CREATE/DROP INDEX (including UNIQUE), and ALTER TABLE ADD/DROP CONSTRAINT.
- * Anything else (e.g. ALTER COLUMN) is ignored.
+ * CREATE/DROP INDEX (including UNIQUE), ALTER TABLE ADD/DROP CONSTRAINT, and
+ * ALTER TABLE ADD/DROP COLUMN, including Prisma's own comma-joined
+ * multi-column form (`ADD COLUMN "a" ..., ADD COLUMN "b" ...` in one
+ * statement) — every column clause in the statement is recorded, not just
+ * the first. Anything else (e.g. ALTER COLUMN) is ignored.
  */
 function applyMigrations(sqlFiles: readonly string[]): MigrationState {
   const tables = new Map<string, string>()
   const indexes = new Map<string, string>()
   const constraints = new Map<string, string>()
+  const columns = new Map<string, Set<string>>()
 
   for (const fileContent of sqlFiles) {
     const statements = splitStatements(stripSqlComments(fileContent))
@@ -94,12 +107,20 @@ function applyMigrations(sqlFiles: readonly string[]): MigrationState {
       const createTable = statement.match(CREATE_TABLE_RE)
       if (createTable?.[1] !== undefined && createTable[2] !== undefined) {
         tables.set(createTable[1], createTable[2])
+        // Column names are the leading quoted identifier of each line in the
+        // table body. Same deliberately-minimal parsing as the rest of this
+        // helper — enough for Prisma's generated DDL, not a SQL parser.
+        columns.set(
+          createTable[1],
+          new Set([...createTable[2].matchAll(/^\s*"([^"]+)"/gm)].map((m) => m[1]!)),
+        )
         continue
       }
 
       const dropTable = statement.match(DROP_TABLE_RE)
       if (dropTable?.[1] !== undefined) {
         tables.delete(dropTable[1])
+        columns.delete(dropTable[1])
         continue
       }
 
@@ -112,6 +133,21 @@ function applyMigrations(sqlFiles: readonly string[]): MigrationState {
       const dropIndex = statement.match(DROP_INDEX_RE)
       if (dropIndex?.[1] !== undefined) {
         indexes.delete(dropIndex[1])
+        continue
+      }
+
+      const addColumn = statement.match(ADD_COLUMN_RE)
+      if (addColumn?.[1] !== undefined) {
+        const existing = columns.get(addColumn[1]) ?? new Set<string>()
+        for (const name of statement.matchAll(ADD_COLUMN_NAME_RE)) existing.add(name[1]!)
+        columns.set(addColumn[1], existing)
+        continue
+      }
+
+      const dropColumn = statement.match(DROP_COLUMN_RE)
+      if (dropColumn?.[1] !== undefined) {
+        const existing = columns.get(dropColumn[1])
+        for (const name of statement.matchAll(DROP_COLUMN_NAME_RE)) existing?.delete(name[1]!)
         continue
       }
 
@@ -129,7 +165,7 @@ function applyMigrations(sqlFiles: readonly string[]): MigrationState {
     }
   }
 
-  return { tables, indexes, constraints }
+  return { tables, indexes, constraints, columns }
 }
 
 function requireTable(state: MigrationState, name: string): string {
@@ -207,6 +243,19 @@ describe('applied migration SQL (folded to net state)', () => {
       /ALTER TABLE "ShiftRequirement" ADD CONSTRAINT "ShiftRequirement_shiftId_fkey" FOREIGN KEY \("shiftId"\) REFERENCES "Shift"\("id"\) ON DELETE CASCADE/,
     )
   })
+
+  it('links a profile to its Supabase auth user, uniquely and optionally', () => {
+    expect(state.columns.get('User')?.has('authUserId')).toBe(true)
+    expect(state.indexes.has('User_authUserId_key'), 'authUserId must be unique').toBe(true)
+  })
+
+  it('records when a member was deactivated', () => {
+    expect(state.columns.get('User')?.has('deactivatedAt')).toBe(true)
+  })
+
+  it('no longer stores a local password hash', () => {
+    expect(state.columns.get('User')?.has('passwordHash')).toBe(false)
+  })
 })
 
 describe('applyMigrations folding semantics (regression guard)', () => {
@@ -245,6 +294,34 @@ describe('applyMigrations folding semantics (regression guard)', () => {
     ])
 
     expect(recreated.indexes.has('Foo_bar_idx')).toBe(true)
+  })
+
+  it('a later DROP COLUMN undoes an earlier ADD COLUMN', () => {
+    const folded = applyMigrations([
+      'CREATE TABLE "T" (\n  "id" INTEGER NOT NULL\n);',
+      'ALTER TABLE "T" ADD COLUMN "temp" TEXT;',
+      'ALTER TABLE "T" DROP COLUMN "temp";',
+    ])
+    expect(folded.columns.get('T')?.has('id')).toBe(true)
+    expect(folded.columns.get('T')?.has('temp')).toBe(false)
+  })
+
+  it('a single ALTER TABLE statement adding two columns records both (Prisma\'s own multi-column style)', () => {
+    const folded = applyMigrations([
+      'CREATE TABLE "T" (\n  "id" INTEGER NOT NULL\n);',
+      'ALTER TABLE "T" ADD COLUMN     "a" TEXT,\nADD COLUMN     "b" TEXT;',
+    ])
+    expect(folded.columns.get('T')?.has('a')).toBe(true)
+    expect(folded.columns.get('T')?.has('b')).toBe(true)
+  })
+
+  it('a single ALTER TABLE statement dropping two columns removes both', () => {
+    const folded = applyMigrations([
+      'CREATE TABLE "T" (\n  "id" INTEGER NOT NULL,\n  "a" TEXT,\n  "b" TEXT\n);',
+      'ALTER TABLE "T" DROP COLUMN "a",\nDROP COLUMN "b";',
+    ])
+    expect(folded.columns.get('T')?.has('a')).toBe(false)
+    expect(folded.columns.get('T')?.has('b')).toBe(false)
   })
 
   it('the real migration history does not currently drop the invariants under test', () => {

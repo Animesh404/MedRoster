@@ -3,7 +3,7 @@ import { createAppError, type AppError } from '@/lib/domain/errors'
 import { emitEvent } from '@/lib/events/outbox'
 import { weekTopic } from '@/lib/events/topics'
 import { withOrderedLocks } from './locks'
-import { withRetry } from './retry'
+import { isCapacityError, withRetry } from './retry'
 import { validateAssignment, type ClaimContext } from './validate'
 
 export interface AssignInput {
@@ -23,7 +23,39 @@ const ZERO: Record<Profession, number> = { DOCTOR: 0, NURSE: 0, RECEPTIONIST: 0 
  * `withOrderedLocks` in `./locks` for why a stronger isolation level silently
  * lets this same code oversell a shift.
  */
-export const TX_OPTIONS = { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+export const TX_OPTIONS = {
+  isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+  /**
+   * How long a transaction may wait to START before Prisma gives up with
+   * P2028. The default is 2s, which is not enough here and was measured, not
+   * guessed: `withOrderedLocks` serialises every claimant of one shift behind
+   * a single advisory lock, so with ~30ms of work per claimant a burst of 50
+   * puts the last one ~1.5s deep — right at the default's edge. 200 concurrent
+   * claims on idle hardware produced 12 P2028s (docs/KNOWN_ISSUES.md).
+   *
+   * 15s covers a realistic shift-drop burst. It is a ceiling, not a target:
+   * anything that genuinely exhausts it is a capacity problem the caller
+   * should hear about as BUSY, which `withRetry` + `toBusyError` now arrange.
+   */
+  maxWait: 15_000,
+  /** Once started, the work itself is small; this only bounds a pathological stall. */
+  timeout: 20_000,
+}
+
+/**
+ * Converts an exhausted-capacity throw into a domain error.
+ *
+ * Anything else is rethrown untouched — a genuine bug must still reach
+ * `withAuth`'s catch-all and be logged as a 500, rather than being quietly
+ * relabelled as congestion.
+ */
+function toBusyError(err: unknown): AppError {
+  if (!isCapacityError(err)) throw err
+  return createAppError(
+    'BUSY',
+    'Too many people are claiming this shift at once. Please try again in a moment.',
+  )
+}
 
 /**
  * The ONLY function in the codebase that creates a Claim (§4.1). Staff claims,
@@ -130,7 +162,7 @@ export async function assignClaim(
       }
       throw err
     }),
-  )
+  ).catch(toBusyError)
 }
 
 export interface UnassignInput {
@@ -171,5 +203,5 @@ export async function unassignClaim(input: UnassignInput): Promise<{ ok: true } 
       }),
     TX_OPTIONS,
     ),
-  )
+  ).catch(toBusyError)
 }

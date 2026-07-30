@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { auth } from '@/auth'
+import { currentSessionUser } from '@/lib/auth/session'
 import { PageHero } from '@/components/page-hero'
 import { StatTile } from '@/components/stat-tile'
 import { ClaimButton } from '@/components/shift/claim-button'
@@ -72,9 +72,9 @@ function countdown(target: Date, now: Date): string {
 }
 
 export default async function MyShiftsPage() {
-  const session = await auth()
-  if (!session?.user) return null // middleware already guards this route
-  const userId = session.user.id
+  const session = await currentSessionUser()
+  if (!session) return null // middleware already guards this route
+  const userId = session.principal.id
   const now = new Date()
 
   const weeks = windowWeeks(now)
@@ -182,11 +182,11 @@ export default async function MyShiftsPage() {
     <div className="space-y-8">
       <DropNoticeBanner notices={notices} />
 
-      <PageHero eyebrow="My shifts" title={session.user.name}>
+      <PageHero eyebrow="My shifts" title={session.name}>
         <p className="text-white/90">
           {nextShift
             ? `Next up: ${dateFmt.format(new Date(nextShift.startsAt))}, ${clock.format(new Date(nextShift.startsAt))} — ${countdown(new Date(nextShift.startsAt), now)}.`
-            : session.user.profession === null
+            : session.principal.profession === null
               ? 'Managers do not hold clinical shifts, so this page stays empty for you.'
               : 'Nothing scheduled in the next five weeks.'}
         </p>
@@ -209,7 +209,7 @@ export default async function MyShiftsPage() {
             {/* Telling a manager to "claim a shift" pointed them at the one action
                 the rules refuse them — a shift requires a profession and they
                 have none (PROFESSION_NOT_REQUIRED). */}
-            {session.user.profession === null
+            {session.principal.profession === null
               ? 'Shifts are claimed by clinical staff. As a manager you assign them from the dashboard instead.'
               : 'You have nothing scheduled in this window. Visit the dashboard to claim a shift.'}
           </p>
@@ -222,7 +222,7 @@ export default async function MyShiftsPage() {
                     {dateFmt.format(new Date(shift.startsAt))} · {clock.format(new Date(shift.startsAt))}–{clock.format(new Date(shift.endsAt))}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {session.user.profession ? PROFESSION_LABELS[session.user.profession] : 'Shift'} · {durationMinutes({ startsAt: new Date(shift.startsAt), endsAt: new Date(shift.endsAt) }) / 60}h
+                    {session.principal.profession ? PROFESSION_LABELS[session.principal.profession] : 'Shift'} · {durationMinutes({ startsAt: new Date(shift.startsAt), endsAt: new Date(shift.endsAt) }) / 60}h
                   </p>
                 </a>
                 <ClaimButton shiftId={shift.id} claimed userId={userId} />

@@ -1,13 +1,11 @@
 import { globSync, readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 
-// `@/auth` is next-auth's real config, which pulls in a `next/server`
-// subpath export that vitest's plain-Node ESM resolution can't find outside
-// the actual Next.js runtime (it resolves fine in `next build`/`next dev`,
-// just not here). Every other test file that imports a route module mocks
-// this out for the same reason; the brand check below needs to import every
-// route module too, so it needs the same mock.
-vi.mock('@/auth', () => ({ auth: () => Promise.resolve(null) }))
+// Route modules pull in `@/lib/auth/session`, which imports the Supabase
+// server client and therefore `next/headers` — unavailable outside a request
+// scope, which is where this test imports them from. The brand check only
+// inspects the exported function objects, so a null session is fine.
+vi.mock('@/lib/auth/session', () => ({ currentSessionUser: () => Promise.resolve(null) }))
 
 const { WITH_AUTH_BRAND } = await import('@/lib/auth/with-auth')
 

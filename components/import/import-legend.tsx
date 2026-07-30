@@ -13,9 +13,14 @@ export function ImportLegend({ legend }: { legend: RuleDescriptor[] }) {
       <h2 className="text-sm font-semibold text-foreground">What these codes mean</h2>
       <dl className="divide-y divide-border">
         {legend.map((rule) => (
-          <div key={rule.code} className="grid grid-cols-1 gap-1 py-2.5 sm:grid-cols-[minmax(0,180px)_1fr] sm:gap-3">
-            <dt className="flex items-start gap-2">
-              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs font-semibold text-foreground">{rule.code}</code>
+          <div key={rule.code} className="grid grid-cols-1 gap-1 py-2.5 sm:grid-cols-[minmax(0,15rem)_1fr] sm:gap-3">
+            {/*
+             * Code and badge stack rather than sit side by side: the longest codes
+             * (UNPARSEABLE_REQUIREMENTS) already fill the column on their own, and a
+             * shrink-0 nowrap Badge next to one would spill over the description.
+             */}
+            <dt className="flex min-w-0 flex-col items-start gap-1">
+              <code className="max-w-full rounded bg-muted px-1.5 py-0.5 font-mono text-xs font-semibold break-words text-foreground">{rule.code}</code>
               <Badge variant={rule.severity === 'FATAL' ? 'destructive' : 'secondary'}>
                 {rule.severity === 'FATAL' ? 'Rejects the row' : 'Repaired automatically'}
               </Badge>

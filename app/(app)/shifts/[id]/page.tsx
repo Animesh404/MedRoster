@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation'
 import type { Profession } from '@prisma/client'
-import { auth } from '@/auth'
+import { currentSessionUser } from '@/lib/auth/session'
 import { PageHero } from '@/components/page-hero'
 import { SlotMeter } from '@/components/slot-meter'
 import { StatTile } from '@/components/stat-tile'
@@ -117,9 +117,9 @@ export default async function ShiftDetailPage({ params }: { params: Promise<{ id
   const shiftId = Number(id)
   if (!Number.isInteger(shiftId) || shiftId < 1) notFound()
 
-  const session = await auth()
-  if (!session?.user) notFound() // middleware already guards this route; defence in depth
-  const principal: Principal = { id: session.user.id, role: session.user.role, profession: session.user.profession }
+  const session = await currentSessionUser()
+  if (!session) notFound() // middleware already guards this route; defence in depth
+  const principal: Principal = session.principal
 
   const shiftRes = await internalFetch(`/api/shifts/${shiftId}`)
   if (shiftRes.status === 404) notFound()

@@ -18,7 +18,6 @@ import { seedClaims } from '@/lib/seed/claim-seeder'
 export const FILL_RATIO = 0.2
 
 export interface RunSeedOptions {
-  passwordHash: string
   /** Pinned "now" for claim seeding, mainly for deterministic tests. */
   now?: Date
 }
@@ -34,20 +33,18 @@ export interface RunSeedResult {
 /**
  * The full seed workflow: manager account, staff/shift import, and the
  * deterministic claim pass. Factored out of prisma/seed.ts (which just wires
- * up the real `prisma` client and password hash) so tests can run it
- * directly against a Testcontainers database.
+ * up the real `prisma` client) so tests can run it directly against a
+ * Testcontainers database.
  */
-export async function runSeed(db: PrismaClient, opts: RunSeedOptions): Promise<RunSeedResult> {
-  const { passwordHash } = opts
-
+export async function runSeed(db: PrismaClient, opts: RunSeedOptions = {}): Promise<RunSeedResult> {
   // Idempotent: upserts keyed on the CSV ids mean re-running never duplicates.
   await db.user.upsert({
     where: { email: 'manager@clinicmail.test' },
     create: {
       email: 'manager@clinicmail.test', name: 'Dana Okonkwo',
-      passwordHash, role: 'MANAGER',
+      role: 'MANAGER',
     },
-    update: { passwordHash },
+    update: {},
   })
 
   // `docker compose up` runs migrate + seed on every container start, so an
@@ -64,7 +61,7 @@ export async function runSeed(db: PrismaClient, opts: RunSeedOptions): Promise<R
     const staffResult = runStaffImport(readFileSync('staff.csv', 'utf8'))
     await db.$transaction((tx) =>
       applyStaffImport(tx, staffResult, {
-        source: 'SEED', filename: 'staff.csv', passwordHash,
+        source: 'SEED', filename: 'staff.csv',
       }), { ...TX_OPTIONS, timeout: 60_000 })
     staffStats = staffResult.stats
   } else {
@@ -79,7 +76,7 @@ export async function runSeed(db: PrismaClient, opts: RunSeedOptions): Promise<R
     const shiftResult = runShiftImport(readFileSync('shifts.csv', 'utf8'))
     await db.$transaction((tx) =>
       applyShiftImport(tx, shiftResult, {
-        source: 'SEED', filename: 'shifts.csv', passwordHash,
+        source: 'SEED', filename: 'shifts.csv',
       }), { ...TX_OPTIONS, timeout: 120_000 })
     shiftStats = shiftResult.stats
   } else {

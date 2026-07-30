@@ -21,7 +21,7 @@ describe('week coverage over real data', () => {
       },
     })
     const nurse = await db.user.create({
-      data: { email: 'n@c.test', name: 'N', passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+      data: { email: 'n@c.test', name: 'N', role: 'STAFF', profession: 'NURSE' },
     })
     await assignClaim({ db, shiftId: shift.id, userId: nurse.id, actorId: nurse.id })
 

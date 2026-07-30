@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation'
-import { auth } from '@/auth'
+import { currentSessionUser } from '@/lib/auth/session'
 import { PageHero } from '@/components/page-hero'
 import { PaginationLinks } from '@/components/pagination-links'
 import { OutcomeBar } from '@/components/import/outcome-bar'
@@ -33,9 +33,9 @@ export default async function ImportReportPage({
   params: Promise<{ runId: string }>
   searchParams: Promise<{ outcome?: string; cursor?: string }>
 }) {
-  const session = await auth()
-  if (!session?.user) notFound() // middleware already guards this route
-  const principal: Principal = { id: session.user.id, role: session.user.role, profession: session.user.profession }
+  const session = await currentSessionUser()
+  if (!session) notFound() // middleware already guards this route
+  const principal: Principal = session.principal
   // Defence in depth — see app/(app)/import/page.tsx: `import:read` is
   // manager-only, and a typed URL must not reach a report staff can't list.
   if (!can(principal, 'import:read')) notFound()

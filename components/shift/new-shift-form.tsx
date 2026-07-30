@@ -207,7 +207,10 @@ export function NewShiftForm() {
         )}
         {count > 0 && (
           <div>
-            <p className="text-xs font-medium text-muted-foreground">First {Math.min(5, count)} date{Math.min(5, count) === 1 ? '' : 's'}</p>
+            <p className="text-xs font-medium text-muted-foreground">
+              {/* "First 5" only when there are more than 5 — otherwise the list is all of them. */}
+              {count > 5 ? 'First 5 dates' : count === 1 ? 'Date' : 'Dates'}
+            </p>
             <ul className="tabular mt-1 space-y-0.5 text-sm text-foreground">
               {preview.dates.slice(0, 5).map((d) => (
                 <li key={d}>{dateFmt.format(new Date(`${d}T00:00:00Z`))}</li>
