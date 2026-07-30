@@ -1,9 +1,24 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 import tsconfigPaths from 'vite-tsconfig-paths'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [tsconfigPaths(), react()],
+  resolve: {
+    alias: {
+      // `server-only` is a build-time guard for the Next bundler: it throws on
+      // import unless resolved under the `react-server` export condition,
+      // which Next sets and Vitest does not. Routes that reach the Supabase
+      // admin client (which opens with `import 'server-only'`) would
+      // otherwise fail to even load under Vitest — including in
+      // tests/rbac/routes.test.ts's dynamic import of every route module.
+      // The real protection against the service-role key reaching the client
+      // bundle is tests/auth/admin-containment.test.ts, which statically
+      // walks the import graph and is unaffected by this alias.
+      'server-only': fileURLToPath(new URL('./tests/stubs/server-only.ts', import.meta.url)),
+    },
+  },
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],

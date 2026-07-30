@@ -17,8 +17,13 @@ export interface InviteAdminPort {
     id: string,
     attrs: { app_metadata?: Record<string, unknown> },
   ): Promise<{ data: { user: { id: string } | null }; error: unknown }>
-  /** Unused by invite/resend/revoke — kept on the port for Task 5's members-list route adapter, which lists Supabase users against the roster. */
-  listUsers(): Promise<{ data: { users: { id: string; email?: string }[] }; error: unknown }>
+  /**
+   * Unused by invite/resend/revoke — kept on the port for Task 5's
+   * members-list route adapter, which lists Supabase users against the
+   * roster and reads `confirmed_at` to distinguish an accepted invite from
+   * a pending one (see `lib/members/status.ts`).
+   */
+  listUsers(): Promise<{ data: { users: { id: string; email?: string; confirmed_at?: string }[] }; error: unknown }>
   deleteUser(id: string): Promise<{ error: unknown }>
 }
 

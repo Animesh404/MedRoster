@@ -29,3 +29,10 @@ afterEach(() => {
 // file, not here.
 process.env.SUPABASE_SERVICE_ROLE_KEY ??= 'test-service-role-key'
 process.env.APP_URL ??= 'http://localhost:3000'
+
+// resolveDatabase() falls back to this only when DATABASE_URL is unset. Every
+// DB-backed test file gets a throwaway Testcontainers DATABASE_URL, which wins
+// by precedence — so this exists purely so getServerEnv() can resolve in tests
+// that never touch a database. A bogus host is deliberate: if anything ever
+// does try to connect through it, it fails loudly rather than silently.
+process.env.DATABASE_URL_DEV ??= 'postgresql://unused:unused@127.0.0.1:1/unused'
