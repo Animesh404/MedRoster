@@ -35,3 +35,34 @@ export function checkRoster(profile: RosterProfile | null): GateResult {
   }
   return { allowed: true }
 }
+
+export interface EmailRosterProfile extends RosterProfile {
+  authUserId: string | null
+}
+
+/**
+ * The roster gate for flows that identify someone by EMAIL rather than by
+ * Supabase uid — magic link, OAuth callback, password recovery.
+ *
+ * Strictly stronger than `checkRoster`, and the difference is the point. A
+ * profile looked up by `authUserId` necessarily has one; a profile looked up by
+ * email may be an imported `staff.csv` row that was never invited
+ * (`authUserId: null`). Those rows carry a real, guessable work address, so
+ * admitting them would let anyone who knows a colleague's email request a
+ * magic link and sign in as them.
+ *
+ * Order matters: a deactivated member gets the deactivated reason even if they
+ * also have no `authUserId`, because "your access was removed" is the true and
+ * more useful answer.
+ */
+export function checkRosterByEmail(profile: EmailRosterProfile | null): GateResult {
+  const base = checkRoster(profile)
+  if (!base.allowed) return base
+  if (!profile!.authUserId) {
+    return {
+      allowed: false,
+      reason: "This email isn't on the roster — ask a manager for an invite.",
+    }
+  }
+  return { allowed: true }
+}
