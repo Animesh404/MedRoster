@@ -138,16 +138,20 @@ test file a throwaway one, and CI sets its own. All three know better than
 `APP_ENV` is deliberately not `NODE_ENV` — Next forces that to `production` for
 any production build, including one you want pointed at dev data.
 
-### Realtime is optional
+### Realtime broadcasts are optional; the Supabase variables are not
 
-Without `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`,
-the app polls `/api/events/since` every 4 seconds and works fully. Live updates
-are a latency improvement, not a correctness requirement.
+`NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` are
+required — they're the input to every Supabase client, auth included, not just
+realtime. Leave either unset and the app fails loudly at boot naming the
+missing variable, rather than every guarded route returning an opaque 500.
 
-Broadcasts come from a trigger on the event outbox, and that trigger installs
-only where a `realtime` schema exists — so migrations apply cleanly to plain
-Postgres too, they just don't emit. The broadcast carries only an event id, type
-and mutation id; the payload stays in the database and is served by an
+What's actually optional is whether *broadcasts* fire. Broadcasts come from a
+trigger on the event outbox, and that trigger installs only where a `realtime`
+schema exists — so migrations apply cleanly to plain Postgres too, they just
+don't emit. Without a live broadcast the app polls `/api/events/since` every 4
+seconds instead and works fully; live updates are a latency improvement, not a
+correctness requirement. The broadcast carries only an event id, type and
+mutation id; the payload stays in the database and is served by an
 authenticated endpoint.
 
 Pointing this at your own Supabase project, three things bite:

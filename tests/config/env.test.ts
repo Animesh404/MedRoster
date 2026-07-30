@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { getServerEnv, resetServerEnvCache } from '@/lib/config/env'
+import { afterEach, describe, expect, it } from 'vitest'
+import { getClientEnv, getServerEnv, resetServerEnvCache } from '@/lib/config/env'
 
 const VALID = {
   DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
@@ -33,5 +33,48 @@ describe('getServerEnv', () => {
   it('no longer requires AUTH_SECRET', () => {
     resetServerEnvCache()
     expect(() => getServerEnv(envWith({}))).not.toThrow()
+  })
+})
+
+describe('getClientEnv', () => {
+  // getClientEnv() reads process.env directly by literal name (see the
+  // comment on its definition — Next inlines NEXT_PUBLIC_* by exact textual
+  // match, so it can't take an injectable env object the way getServerEnv
+  // does). tests/setup.ts deliberately leaves both of these unset for every
+  // other test file — see its comment — so each case here must set only what
+  // it needs and restore the prior value afterwards, never leak a default.
+  const ORIGINAL_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const ORIGINAL_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+
+  afterEach(() => {
+    if (ORIGINAL_URL === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL
+    else process.env.NEXT_PUBLIC_SUPABASE_URL = ORIGINAL_URL
+
+    if (ORIGINAL_KEY === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+    else process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = ORIGINAL_KEY
+  })
+
+  it('returns both values and reports realtime configured when both are set', () => {
+    process.env.NEXT_PUBLIC_SUPABASE_URL = 'http://127.0.0.1:54321'
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = 'publishable-key'
+
+    const env = getClientEnv()
+    expect(env.supabaseUrl).toBe('http://127.0.0.1:54321')
+    expect(env.supabasePublishableKey).toBe('publishable-key')
+    expect(env.realtimeConfigured).toBe(true)
+  })
+
+  it('names NEXT_PUBLIC_SUPABASE_URL when it is missing', () => {
+    delete process.env.NEXT_PUBLIC_SUPABASE_URL
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = 'publishable-key'
+
+    expect(() => getClientEnv()).toThrow(/NEXT_PUBLIC_SUPABASE_URL/)
+  })
+
+  it('names NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY when it is missing', () => {
+    process.env.NEXT_PUBLIC_SUPABASE_URL = 'http://127.0.0.1:54321'
+    delete process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+
+    expect(() => getClientEnv()).toThrow(/NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY/)
   })
 })

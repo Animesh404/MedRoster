@@ -3,6 +3,7 @@
 import { redirect } from 'next/navigation'
 import { prisma } from '@/lib/db/client'
 import { checkRoster } from '@/lib/auth/roster-gate'
+import { safeNextPath } from '@/lib/auth/safe-redirect'
 import { createSupabaseServerClient } from '@/lib/supabase/server'
 
 export interface LoginState {
@@ -45,5 +46,5 @@ export async function loginAction(_prevState: LoginState, formData: FormData): P
     return { error: gate.reason }
   }
 
-  redirect(next || '/dashboard')
+  redirect(safeNextPath(next))
 }
