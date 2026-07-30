@@ -18,8 +18,10 @@ export type { AppEnv }
  *  - **Server secrets never reach the browser.** Only `NEXT_PUBLIC_*` values are
  *    inlined into the client bundle by Next, so anything else lives behind
  *    `getServerEnv()`, which refuses to run outside Node.
- *  - **Fail loudly at boot, not obscurely at runtime.** A missing AUTH_SECRET
- *    should say so by name, not surface three layers down as a decrypt failure.
+ *  - **Fail loudly at boot, not obscurely at runtime.** A missing
+ *    `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_SUPABASE_URL` or
+ *    `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` should say so by name, not
+ *    surface three layers down as an opaque 500 from the Supabase client.
  */
 
 const serverSchema = z.object({
@@ -35,14 +37,17 @@ const serverSchema = z.object({
 
 const clientSchema = z.object({
   /**
-   * Both halves are required together or realtime is treated as unconfigured.
-   * A url without a key connects and then silently delivers nothing, which is
-   * worse than not connecting — the UI would report itself live while missing
-   * every update. Absent either, the app falls back to polling, which works
-   * fully.
+   * Both required: these two are the input to every Supabase client — auth
+   * included (lib/supabase/server.ts, lib/supabase/browser.ts, prisma/seed.ts)
+   * — not just realtime. Without them every guarded route would fail with an
+   * opaque 500 naming nothing, instead of a clear boot-time error.
    */
-  NEXT_PUBLIC_SUPABASE_URL: z.string().url().optional().or(z.literal('')),
-  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: z.string().optional().or(z.literal('')),
+  NEXT_PUBLIC_SUPABASE_URL: z
+    .string()
+    .url('NEXT_PUBLIC_SUPABASE_URL is required — `supabase start` prints it'),
+  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: z
+    .string()
+    .min(1, 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY is required — `supabase start` prints it'),
 })
 
 export interface ServerEnv {
@@ -110,10 +115,23 @@ export function getServerEnv(
 export interface ClientEnv {
   supabaseUrl: string
   supabasePublishableKey: string
-  /** True only when BOTH halves are present — see the schema comment above. */
+  /**
+   * Always true. Kept on the returned shape because
+   * `hooks/use-realtime.ts` reads it to choose realtime vs. polling — see
+   * the comment on that call site for how "unconfigured" is now detected
+   * (a thrown `ConfigError`, since both halves are required below).
+   */
   realtimeConfigured: boolean
 }
 
+/**
+ * Throws a `ConfigError` naming the missing variable if either half is
+ * absent — these are required, not just for realtime but as the input to
+ * every Supabase client (auth included). Callers for whom an unconfigured
+ * Supabase is a legitimate, handled case (currently only
+ * `hooks/use-realtime.ts`, which falls back to polling) must catch this
+ * themselves; nothing here silently returns empty strings any more.
+ */
 export function getClientEnv(): ClientEnv {
   // Read each name as a full literal: Next replaces `process.env.NEXT_PUBLIC_X`
   // by exact textual match at build time, so a computed key would come back
@@ -123,13 +141,17 @@ export function getClientEnv(): ClientEnv {
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
   })
 
-  const url = (parsed.success ? parsed.data.NEXT_PUBLIC_SUPABASE_URL : '') ?? ''
-  const key = (parsed.success ? parsed.data.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY : '') ?? ''
+  if (!parsed.success) {
+    const details = parsed.error.issues
+      .map((i) => `  - ${i.path.join('.') || '(root)'}: ${i.message}`)
+      .join('\n')
+    throw new ConfigError(`Invalid client configuration:\n${details}`)
+  }
 
   return {
-    supabaseUrl: url,
-    supabasePublishableKey: key,
-    realtimeConfigured: Boolean(url) && Boolean(key),
+    supabaseUrl: parsed.data.NEXT_PUBLIC_SUPABASE_URL,
+    supabasePublishableKey: parsed.data.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+    realtimeConfigured: true,
   }
 }
 
