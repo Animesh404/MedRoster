@@ -52,6 +52,7 @@
     "jsdom": "^29.1.1",
     "playwright": "^1.62.0",
     "prisma": "^7.9.1",
+    "supabase": "^2.110.0",
     "tailwindcss": "^4",
     "testcontainers": "^12.0.4",
     "tsx": "^4.23.1",
