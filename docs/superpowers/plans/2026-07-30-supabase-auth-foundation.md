@@ -42,39 +42,59 @@ Brings up the local auth service and teaches `lib/config/env.ts` about the new v
   - `getServerEnv(): ServerEnv` — `ServerEnv` gains `supabaseServiceRoleKey: string` and `appUrl: string`; loses `authSecret`.
   - `getClientEnv(): ClientEnv` — unchanged shape: `{ supabaseUrl: string; supabasePublishableKey: string; realtimeConfigured: boolean }`.
 
-- [ ] **Step 1: Install the Supabase CLI and start the stack**
+- [ ] **Step 1: Install the Supabase CLI and start the stack — ALREADY DONE**
 
-The CLI is not currently installed on this machine.
+> Done by the controller before Task 1 was dispatched, and recorded here so the
+> steps match what actually works on this machine.
+>
+> **Not brew.** `brew install supabase/tap/supabase` fails here — brew refuses
+> to build against the installed Xcode 16.4. The CLI is installed as a **dev
+> dependency** instead, which is officially supported, pins the version in
+> `package.json`, and removes brew as a prerequisite for anyone cloning:
+>
+> ```bash
+> npm install supabase --save-dev   # installed 2.110.0
+> npx supabase init                 # answer "n" to VS Code settings
+> ```
+>
+> **The full stack does not come up on this machine.** A plain
+> `npx supabase start` leaves four containers unhealthy. Excluding the optional
+> services works and leaves everything auth needs — Postgres, GoTrue, PostgREST,
+> Realtime, and the Mailpit mail catcher:
+>
+> ```bash
+> npx supabase start -x studio,imgproxy,edge-runtime,logflare,vector,supavisor,storage-api,postgres-meta
+> ```
+>
+> Observed endpoints: API `http://127.0.0.1:54321`, Postgres
+> `postgresql://postgres:postgres@127.0.0.1:54322/postgres`, **Mailpit**
+> `http://127.0.0.1:54324`. (This settles the spec's open note about
+> Inbucket vs Mailpit: this CLI version ships Mailpit.)
+
+- [ ] **Step 2: Point `.env` at the local stack — `.env` ALREADY DONE, `.env.example` IS YOURS**
+
+> The controller has already written the real keys into the git-ignored `.env`,
+> including repointing `DATABASE_URL_DEV` at the CLI stack's Postgres on port
+> **54322** (auth and application data must share one database) and removing
+> `AUTH_SECRET` / `AUTH_TRUST_HOST`. Do not edit `.env`.
+
+Your job in this step is `.env.example` only. Add the four keys below with
+placeholder values, update the `DATABASE_URL_DEV` comment to say the Supabase
+CLI stack provides Postgres on 54322 rather than docker-compose, and delete the
+`AUTH_SECRET` and `AUTH_TRUST_HOST` blocks:
 
 ```bash
-brew install supabase/tap/supabase
-supabase --version
-supabase init          # answer "n" to generating VS Code settings
-supabase start
-```
-
-`supabase start` prints an `API URL`, `anon key`, `service_role key`, and a mail-catcher URL. Keep this output — Step 2 needs three of those values.
-
-Expected: a table of local service URLs, no error. First run pulls several Docker images and can take a few minutes.
-
-- [ ] **Step 2: Point `.env` at the local stack**
-
-Add to `.env` (real values from Step 1's output) and mirror the keys, with placeholder values, into `.env.example`:
-
-```bash
-# Supabase Auth. `supabase start` prints all three.
+# Supabase Auth. `npx supabase start` prints all of these.
 NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<anon key from `supabase start`>
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<publishable key from `npx supabase start`>
 
 # Server-only. NEVER prefix this with NEXT_PUBLIC_ — Next inlines those into
 # the client bundle, and this key bypasses every access rule.
-SUPABASE_SERVICE_ROLE_KEY=<service_role key from `supabase start`>
+SUPABASE_SERVICE_ROLE_KEY=<secret key from `npx supabase start`>
 
 # Absolute origin used to build invite / recovery redirect targets.
 APP_URL=http://localhost:3000
 ```
-
-Delete the `AUTH_SECRET` and `AUTH_TRUST_HOST` blocks from `.env.example`. Leave them in your local `.env` until Task 7 removes the last reader.
 
 - [ ] **Step 3: Write the failing config test**
 
@@ -1499,16 +1519,21 @@ In `README.md`, replace the `docker compose up` setup section with the Supabase 
 ```markdown
 ## Local setup
 
-Requires Docker and the [Supabase CLI](https://supabase.com/docs/guides/local-development).
+Requires Docker. The Supabase CLI ships as a dev dependency — no global install.
 
 ```bash
-supabase start          # Postgres, auth, and a local mail catcher
-cp .env.example .env    # then paste the keys `supabase start` printed
 npm install
+npx supabase start -x studio,imgproxy,edge-runtime,logflare,vector,supavisor,storage-api,postgres-meta
+cp .env.example .env    # then paste the keys `npx supabase start` printed
 npx prisma migrate deploy
 npm run db:seed
 npm run dev
 ```
+
+The `-x` flags skip optional services (Studio, storage, analytics) that are not
+needed and do not come up reliably on all machines. Postgres runs on 54322, the
+auth API on 54321, and invite/recovery emails land in Mailpit at
+<http://127.0.0.1:54324>.
 
 Seeded credentials are unchanged — see "Demo accounts" below.
 ```
