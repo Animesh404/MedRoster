@@ -17,9 +17,9 @@ const SEED_PASSWORD = process.env.SEED_PASSWORD ?? 'medroster123'
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ next?: string }>
+  searchParams: Promise<{ next?: string; error?: string }>
 }) {
-  const { next } = await searchParams
+  const { next, error } = await searchParams
   // Aggregate counts only — nothing sensitive — so a failed connection just
   // hides the numbers rather than taking the whole sign-in page down.
   const stats = await getRosterStats().catch(() => null)
@@ -76,7 +76,7 @@ export default async function LoginPage({
               Use your MedRoster account, or a demo login below.
             </p>
           </div>
-          <LoginForm next={next ?? ''} demoPassword={SEED_PASSWORD} />
+          <LoginForm next={next ?? ''} demoPassword={SEED_PASSWORD} error={error} />
         </div>
       </div>
     </div>
