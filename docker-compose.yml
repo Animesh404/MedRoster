@@ -23,7 +23,7 @@ services:
       CLINIC_TZ: Europe/London
       SEED_PASSWORD: medroster123
     ports: ['3000:3000']
-    command: sh -c "npx prisma migrate deploy && npx tsx --conditions=react-server prisma/seed.ts && npm run start"
+    command: sh -c "npx prisma migrate deploy && npx tsx prisma/seed.ts && npm run start"
 
 volumes:
   pgdata:
