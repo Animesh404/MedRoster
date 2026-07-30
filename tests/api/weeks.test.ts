@@ -11,7 +11,21 @@ vi.mock('@/lib/db/client', async () => {
 })
 
 let session: { user: { id: number; email: string; name: string; role: 'STAFF' | 'MANAGER'; profession: string | null } } | null = null
-vi.mock('@/auth', () => ({ auth: () => Promise.resolve(session) }))
+
+// The route handlers resolve their principal via `@/lib/auth/session`'s
+// `currentSessionUser`, not `@/auth` directly, so that's what needs mocking
+// here. Reshaped into `SessionUser`'s `{ principal }` shape rather than the
+// old Auth.js `{ user }` shape the tests still build for convenience.
+vi.mock('@/lib/auth/session', () => ({
+  currentSessionUser: () => Promise.resolve(
+    session && {
+      authUserId: 'test-auth-user',
+      email: session.user.email,
+      name: session.user.name,
+      principal: { id: session.user.id, role: session.user.role, profession: session.user.profession },
+    },
+  ),
+}))
 
 const { GET: weekGet } = await import('@/app/api/weeks/[isoWeek]/route')
 
@@ -22,7 +36,7 @@ function req(url: string, headers?: Record<string, string>) {
 async function asManager() {
   const db = await getTestDb()
   const manager = await db.user.create({
-    data: { email: 'mgr@c.test', name: 'Manager', passwordHash: 'x', role: 'MANAGER', profession: null },
+    data: { email: 'mgr@c.test', name: 'Manager', role: 'MANAGER', profession: null },
   })
   session = { user: { id: manager.id, email: manager.email, name: manager.name, role: 'MANAGER', profession: null } }
   return manager
@@ -59,7 +73,7 @@ describe('GET /api/weeks/:isoWeek', () => {
     await asManager()
     const db = await getTestDb()
     const nurse = await db.user.create({
-      data: { email: 'n@c.test', name: 'N', passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+      data: { email: 'n@c.test', name: 'N', role: 'STAFF', profession: 'NURSE' },
     })
     const shift = await db.shift.create({
       data: {

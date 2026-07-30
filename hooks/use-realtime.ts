@@ -27,16 +27,26 @@ export function shouldApply(event: OutboxEvent, ownMutationIds: Set<string>): bo
 }
 
 /**
- * Realtime config comes from the shared client env, which requires BOTH the url
- * and the publishable key before reporting itself configured. A url without a
- * key connects and then silently delivers nothing — worse than not connecting,
- * because the UI would show itself live while missing every update.
+ * `getClientEnv()` now requires both `NEXT_PUBLIC_SUPABASE_URL` and
+ * `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` — they are the input to every
+ * Supabase client, not just this one — and throws a `ConfigError` naming
+ * whichever is missing rather than quietly returning empty strings.
  *
- * Absent either, the app falls back to polling, which works fully. That is also
- * the correct behaviour against local Docker Postgres, which has no `realtime`
- * schema and therefore never emits a broadcast at all.
+ * For auth that's the point: fail loudly. But realtime itself stays
+ * optional — falling back to polling is correct behaviour, not a
+ * misconfiguration, against a deployment with no `realtime` schema (e.g.
+ * local Docker Postgres) or a test process that never sets these two at all
+ * (see tests/setup.ts). So this is the one call site allowed to treat the
+ * throw as "not configured" rather than let it propagate.
  */
-const { supabaseUrl, supabasePublishableKey, realtimeConfigured } = getClientEnv()
+let supabaseUrl = ''
+let supabasePublishableKey = ''
+let realtimeConfigured = false
+try {
+  ;({ supabaseUrl, supabasePublishableKey, realtimeConfigured } = getClientEnv())
+} catch {
+  // Unconfigured — HAS_SUPABASE below stays false and the hook polls instead.
+}
 
 // `createClient` throws synchronously — at MODULE LOAD, not just when a channel
 // is opened — the instant its url argument is an empty string, so it can only be

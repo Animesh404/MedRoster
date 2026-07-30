@@ -9,6 +9,7 @@ export const RULE_CODES = [
   'FORBIDDEN',
   'NOT_FOUND',
   'INVALID_INPUT',
+  'BUSY',
 ] as const
 
 export type RuleCode = (typeof RULE_CODES)[number]
@@ -32,6 +33,11 @@ const HTTP_STATUS: Record<RuleCode, number> = {
   SHIFT_IN_PAST: 409, PROFESSION_NOT_REQUIRED: 409, ROLE_FULL: 409,
   OVERLAP: 409, ALREADY_CLAIMED: 409, NOT_CLAIMED: 409,
   VERSION_CONFLICT: 409, FORBIDDEN: 403, NOT_FOUND: 404, INVALID_INPUT: 400,
+  // 503, not 500: the request was well-formed and the server is simply at
+  // capacity right now. The distinction matters to the caller — 503 says
+  // "retry this exact request", 500 says "something is broken, stop". See
+  // `isCapacityError` in lib/rules/retry.ts for when this is raised.
+  BUSY: 503,
 }
 
 export const statusFor = (code: RuleCode): number => HTTP_STATUS[code]

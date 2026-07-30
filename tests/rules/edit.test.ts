@@ -24,7 +24,7 @@ async function makeShift(startsAt: Date, endsAt: Date, nurses = 2, doctors = 0) 
 async function makeNurse(i: number) {
   const db = await getTestDb()
   return db.user.create({
-    data: { email: `n${i}@c.test`, name: `Nurse ${i}`, passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+    data: { email: `n${i}@c.test`, name: `Nurse ${i}`, role: 'STAFF', profession: 'NURSE' },
   })
 }
 
@@ -296,10 +296,10 @@ describe('commitShiftEdit', () => {
       // current time — exactly the window CRITICAL-2 exploited.
       const shift2 = await makeShift(D('2026-12-01T22:00Z'), D('2026-12-02T02:00Z'), 2)
       const incumbent = await db.user.create({
-        data: { email: `inc${i}@c.test`, name: `Incumbent ${i}`, passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+        data: { email: `inc${i}@c.test`, name: `Incumbent ${i}`, role: 'STAFF', profession: 'NURSE' },
       })
       const racer = await db.user.create({
-        data: { email: `race${i}@c.test`, name: `Racer ${i}`, passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+        data: { email: `race${i}@c.test`, name: `Racer ${i}`, role: 'STAFF', profession: 'NURSE' },
       })
       await assignClaim({ db, shiftId: shift1.id, userId: incumbent.id, actorId: incumbent.id })
 

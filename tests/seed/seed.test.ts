@@ -7,7 +7,7 @@ import { runSeed } from '@/lib/seed/run-seed'
 import { computeCoverage } from '@/lib/coverage'
 import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
 
-const META = { source: 'SEED' as const, filename: 'x.csv', passwordHash: 'x' }
+const META = { source: 'SEED' as const, filename: 'x.csv' }
 const NOW = new Date('2026-07-28T00:00:00Z')
 
 async function importFixtures() {
@@ -126,7 +126,7 @@ describe('runSeed', () => {
   it('running the seed twice adds no duplicate ImportRun rows or claims', async () => {
     const db = await getTestDb()
 
-    const first = await runSeed(db, { passwordHash: 'x', now: NOW })
+    const first = await runSeed(db, { now: NOW })
     const firstRunCount = await db.importRun.count()
     // One SEED ImportRun for staff.csv, one for shifts.csv.
     expect(firstRunCount).toBe(2)
@@ -134,7 +134,7 @@ describe('runSeed', () => {
     expect(firstClaimCount).toBe(first.claimsCreated)
     expect(firstClaimCount).toBeGreaterThan(0)
 
-    const second = await runSeed(db, { passwordHash: 'x', now: NOW })
+    const second = await runSeed(db, { now: NOW })
     const secondRunCount = await db.importRun.count()
     expect(secondRunCount).toBe(firstRunCount)
     const secondClaimCount = await db.claim.count()

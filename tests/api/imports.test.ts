@@ -18,7 +18,21 @@ vi.mock('@/lib/db/client', async () => {
 })
 
 let session: { user: { id: number; email: string; name: string; role: 'STAFF' | 'MANAGER'; profession: string | null } } | null = null
-vi.mock('@/auth', () => ({ auth: () => Promise.resolve(session) }))
+
+// The route handlers resolve their principal via `@/lib/auth/session`'s
+// `currentSessionUser`, not `@/auth` directly, so that's what needs mocking
+// here. Reshaped into `SessionUser`'s `{ principal }` shape rather than the
+// old Auth.js `{ user }` shape the tests still build for convenience.
+vi.mock('@/lib/auth/session', () => ({
+  currentSessionUser: () => Promise.resolve(
+    session && {
+      authUserId: 'test-auth-user',
+      email: session.user.email,
+      name: session.user.name,
+      principal: { id: session.user.id, role: session.user.role, profession: session.user.profession },
+    },
+  ),
+}))
 
 const { GET: importsGet, POST: importsPost } = await import('@/app/api/imports/route')
 const { GET: importGet } = await import('@/app/api/imports/[runId]/route')
@@ -28,7 +42,7 @@ const noParams = { params: Promise.resolve({}) }
 async function asManager() {
   const db = await getTestDb()
   const manager = await db.user.create({
-    data: { email: 'mgr@c.test', name: 'Manager', passwordHash: 'x', role: 'MANAGER', profession: null },
+    data: { email: 'mgr@c.test', name: 'Manager', role: 'MANAGER', profession: null },
   })
   session = { user: { id: manager.id, email: manager.email, name: manager.name, role: 'MANAGER', profession: null } }
   return manager
@@ -37,7 +51,7 @@ async function asManager() {
 async function asStaff() {
   const db = await getTestDb()
   const staff = await db.user.create({
-    data: { email: 'staff@c.test', name: 'Staff', passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+    data: { email: 'staff@c.test', name: 'Staff', role: 'STAFF', profession: 'NURSE' },
   })
   session = { user: { id: staff.id, email: staff.email, name: staff.name, role: 'STAFF', profession: 'NURSE' } }
   return staff
@@ -56,7 +70,7 @@ describe('import report data', () => {
     const db = await getTestDb()
     const result = runStaffImport(readFileSync('staff.csv', 'utf8'))
     const runId = await db.$transaction((tx) =>
-      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv', passwordHash: 'x' }))
+      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv' }))
 
     const seen: number[] = []
     let cursor: string | null = null
@@ -77,7 +91,7 @@ describe('import report data', () => {
     const db = await getTestDb()
     const result = runStaffImport(readFileSync('staff.csv', 'utf8'))
     const runId = await db.$transaction((tx) =>
-      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv', passwordHash: 'x' }))
+      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv' }))
 
     const rejected = await db.importRowResult.findMany({
       where: { importRunId: runId, outcome: 'REJECTED' },
@@ -91,7 +105,7 @@ describe('import report data', () => {
     const db = await getTestDb()
     const result = runStaffImport(readFileSync('staff.csv', 'utf8'))
     const runId = await db.$transaction((tx) =>
-      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv', passwordHash: 'x' }))
+      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv' }))
 
     const run = await db.importRun.findUniqueOrThrow({ where: { id: runId } })
     expect(run.stats).toEqual({ accepted: 34, merged: 3, rejected: 4, total: 41 })
@@ -262,7 +276,7 @@ describe('GET /api/imports', () => {
     const db = await getTestDb()
     const result = runStaffImport(readFileSync('staff.csv', 'utf8'))
     await db.$transaction((tx) =>
-      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv', passwordHash: 'x' }))
+      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv' }))
 
     const res = await importsGet(new Request('http://localhost/api/imports'), noParams)
     expect(res.status).toBe(200)
@@ -278,7 +292,7 @@ describe('GET /api/imports/:runId', () => {
     const db = await getTestDb()
     const result = runStaffImport(readFileSync('staff.csv', 'utf8'))
     const runId = await db.$transaction((tx) =>
-      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv', passwordHash: 'x' }))
+      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv' }))
 
     const res = await importGet(
       new Request(`http://localhost/api/imports/${runId}?limit=50`),
@@ -305,7 +319,7 @@ describe('GET /api/imports/:runId', () => {
     const db = await getTestDb()
     const result = runStaffImport(readFileSync('staff.csv', 'utf8'))
     const runId = await db.$transaction((tx) =>
-      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv', passwordHash: 'x' }))
+      applyStaffImport(tx, result, { source: 'UPLOAD', filename: 'staff.csv' }))
 
     // A tiny page size (limit=5) must not shrink outcomeCounts along with
     // the row page it accompanies — see lib/import/report.ts.

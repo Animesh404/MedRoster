@@ -54,4 +54,14 @@ test.describe('auth', () => {
     await expect(page).toHaveURL(/\/login/)
     assertClean(capture)
   })
+
+  test('an off-origin next param is ignored, not followed after a real sign-in', async ({ page, capture }) => {
+    await page.goto(`/login?next=${encodeURIComponent('https://evil.example/')}`)
+    await page.getByLabel('Email').fill(MANAGER_EMAIL)
+    await page.getByLabel('Password').fill(SEED_PASSWORD)
+    await page.getByRole('button', { name: 'Sign in' }).click()
+
+    await expect(page).toHaveURL('/dashboard')
+    assertClean(capture)
+  })
 })
