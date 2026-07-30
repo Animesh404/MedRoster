@@ -1,7 +1,9 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
 
-const authUser = vi.hoisted(() => ({ current: null as { id: string } | null }))
+const authUser = vi.hoisted(() => ({
+  current: null as { id: string; app_metadata?: { role?: string; profession?: string } } | null,
+}))
 
 vi.mock('@/lib/supabase/server', () => ({
   createSupabaseServerClient: () =>
@@ -78,11 +80,30 @@ describe('currentSessionUser', () => {
         profession: null, authUserId: 'auth-uid-3', passwordHash: 'x',
       },
     })
-    // The mocked token carries no role at all. If the implementation ever
-    // starts trusting app_metadata, this test fails — which is the point.
-    authUser.current = { id: 'auth-uid-3' }
+    // The token carries a CONFLICTING role/profession claim — STAFF/NURSE —
+    // against a profile row that says MANAGER/null. If the implementation
+    // ever reads app_metadata, even as a fallback, this test fails: the
+    // profile's values must win outright, not merely fill gaps the token
+    // leaves open.
+    authUser.current = { id: 'auth-uid-3', app_metadata: { role: 'STAFF', profession: 'NURSE' } }
 
     const session = await currentSessionUser()
-    expect(session!.principal.role).toBe('MANAGER')
+    expect(session!.principal).toEqual({ id: expect.any(Number), role: 'MANAGER', profession: null })
+  })
+
+  it('does not let a token claim resuscitate a deactivated member', async () => {
+    const db = await getTestDb()
+    await db.user.create({
+      data: {
+        email: 'ghost@c.test', name: 'Ghost Manager', role: 'STAFF',
+        profession: 'DOCTOR', authUserId: 'auth-uid-4', passwordHash: 'x',
+        deactivatedAt: new Date(),
+      },
+    })
+    // Even a token asserting a privileged role must not override the
+    // deactivated profile — deactivation fails closed regardless of claims.
+    authUser.current = { id: 'auth-uid-4', app_metadata: { role: 'MANAGER' } }
+
+    expect(await currentSessionUser()).toBeNull()
   })
 })
