@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation'
-import { auth } from '@/auth'
+import { currentSessionUser } from '@/lib/auth/session'
 import { PageHero } from '@/components/page-hero'
 import { PaginationLinks } from '@/components/pagination-links'
 import { ImportUploadForm } from '@/components/import/import-upload-form'
@@ -14,9 +14,9 @@ export default async function ImportPage({
 }: {
   searchParams: Promise<{ cursor?: string }>
 }) {
-  const session = await auth()
-  if (!session?.user) notFound() // middleware already guards this route
-  const principal: Principal = { id: session.user.id, role: session.user.role, profession: session.user.profession }
+  const session = await currentSessionUser()
+  if (!session) notFound() // middleware already guards this route
+  const principal: Principal = session.principal
   // Defence in depth: `import:read`/`import:run` are manager-only permissions
   // (STAFF_PERMISSIONS has neither) — the nav already hides this link from
   // staff, but a typed URL must not reach it either.

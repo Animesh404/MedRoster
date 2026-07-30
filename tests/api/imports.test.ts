@@ -18,7 +18,21 @@ vi.mock('@/lib/db/client', async () => {
 })
 
 let session: { user: { id: number; email: string; name: string; role: 'STAFF' | 'MANAGER'; profession: string | null } } | null = null
-vi.mock('@/auth', () => ({ auth: () => Promise.resolve(session) }))
+
+// The route handlers resolve their principal via `@/lib/auth/session`'s
+// `currentSessionUser`, not `@/auth` directly, so that's what needs mocking
+// here. Reshaped into `SessionUser`'s `{ principal }` shape rather than the
+// old Auth.js `{ user }` shape the tests still build for convenience.
+vi.mock('@/lib/auth/session', () => ({
+  currentSessionUser: () => Promise.resolve(
+    session && {
+      authUserId: 'test-auth-user',
+      email: session.user.email,
+      name: session.user.name,
+      principal: { id: session.user.id, role: session.user.role, profession: session.user.profession },
+    },
+  ),
+}))
 
 const { GET: importsGet, POST: importsPost } = await import('@/app/api/imports/route')
 const { GET: importGet } = await import('@/app/api/imports/[runId]/route')
