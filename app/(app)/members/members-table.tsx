@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
@@ -47,6 +47,15 @@ async function readErrorMessage(res: Response, fallback: string): Promise<string
 }
 
 /**
+ * `page.tsx` renders every row with an optimistic `status: 'active'` — it
+ * can't derive the real status without the Supabase admin API, which must
+ * never reach the client (see the module doc below). If this initial load
+ * fails, the manager is looking at placeholder data with no way to tell, so
+ * the message says so explicitly rather than reusing a generic failure text.
+ */
+const STALE_STATUS_MESSAGE = 'Could not load current member statuses. The list below may be out of date.'
+
+/**
  * Manager-only roster table + invite form. Every mutation is a `fetch` to
  * `app/api/members/*` (Task 5) — this file never touches Prisma or Supabase
  * directly, which is what keeps `lib/supabase/admin.ts` out of the client
@@ -69,16 +78,65 @@ export function MembersTable({
   // so only the button(s) whose own request is in flight disable.
   const [busy, setBusy] = useState<Record<string, boolean>>({})
 
+  /** Re-fetches the roster and replaces `members` wholesale. A failure here
+   *  (a bad status, or the request itself rejecting) is surfaced the same
+   *  way a mutation failure is: a successful mutation followed by a failed
+   *  refresh must not leave the manager looking at stale rows with no
+   *  indication anything went wrong. */
   async function refreshMembers() {
-    const res = await fetch('/api/members')
-    if (!res.ok) return
-    const body = (await res.json().catch(() => null)) as { members?: Member[] } | null
-    if (body?.members) setMembers(body.members)
+    try {
+      const res = await fetch('/api/members')
+      if (!res.ok) {
+        setError(await readErrorMessage(res, 'Could not refresh the member list. It may be out of date.'))
+        return
+      }
+      const body = (await res.json().catch(() => null)) as { members?: Member[] } | null
+      if (body?.members) setMembers(body.members)
+    } catch {
+      setError('Could not reach the server to refresh the member list. It may be out of date.')
+    }
   }
+
+  // page.tsx can only render an optimistic 'active' placeholder for every
+  // row — deriving the real status needs the Supabase admin API, which must
+  // stay out of this client bundle (tests/auth/admin-containment.test.ts).
+  // Without this, the Invite/Resend/Revoke controls — gated on status — stay
+  // invisible until some unrelated mutation happens to trigger a refresh.
+  useEffect(() => {
+    // Guards against setting state after this component has unmounted (e.g.
+    // the test that renders it resolves after the test itself has moved on).
+    let ignore = false
+
+    async function loadInitialStatuses() {
+      try {
+        const res = await fetch('/api/members')
+        if (ignore) return
+        if (!res.ok) {
+          setError(STALE_STATUS_MESSAGE)
+          return
+        }
+        const body = (await res.json().catch(() => null)) as { members?: Member[] } | null
+        if (ignore) return
+        if (body?.members) setMembers(body.members)
+      } catch {
+        if (!ignore) setError(STALE_STATUS_MESSAGE)
+      }
+    }
+
+    void loadInitialStatuses()
+    return () => {
+      ignore = true
+    }
+  }, [])
 
   /** Runs one mutation: marks `key` busy, clears/sets the shared error, and
    *  re-fetches the roster on success. Returns whether it succeeded, so
-   *  callers can reset form state only when the server actually accepted it. */
+   *  callers can reset form state only when the server actually accepted it.
+   *  `request()` itself can reject outright (offline, DNS failure, connection
+   *  reset) rather than resolving with a bad status — every caller invokes
+   *  this as a fire-and-forget `void runMutation(...)`, so without this catch
+   *  that rejection would escape as an unhandled promise rejection with no
+   *  alert shown. */
   async function runMutation(key: string, request: () => Promise<Response>, fallback: string): Promise<boolean> {
     setBusy((b) => ({ ...b, [key]: true }))
     setError(null)
@@ -90,6 +148,9 @@ export function MembersTable({
       }
       await refreshMembers()
       return true
+    } catch {
+      setError('Could not reach the server. Check your connection and try again.')
+      return false
     } finally {
       setBusy((b) => ({ ...b, [key]: false }))
     }
