@@ -25,9 +25,18 @@ export default function ForgotPasswordPage() {
     e.preventDefault()
     setPending(true)
     const supabase = createSupabaseBrowserClient()
-    await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/auth/reset-password`,
-    })
+    // Deliberately no branch on the outcome, not even a caught one: a network
+    // failure must render exactly like a successful send, or its absence
+    // becomes its own enumeration signal. The `catch` only exists so a thrown
+    // rejection can't leave `pending` stuck forever — the confirmation below
+    // renders unconditionally either way.
+    try {
+      await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/auth/reset-password`,
+      })
+    } catch {
+      // Swallowed on purpose — see comment above.
+    }
     setPending(false)
     setSubmitted(true)
   }

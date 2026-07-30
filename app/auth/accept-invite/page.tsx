@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
-import { needsPassword } from '@/app/auth/invite-branch'
+import { inviteDestination } from '@/app/auth/invite-branch'
 import { SetPasswordForm } from '@/app/auth/set-password-form'
 import { createSupabaseServerClient } from '@/lib/supabase/server'
 
@@ -41,8 +41,10 @@ export default async function AcceptInvitePage() {
 function AcceptInviteBody({ identities }: { identities: { provider: string }[] | null | undefined }) {
   // An invitee who accepted via Google has no password to set — identity
   // linking removed the unconfirmed email identity, so this form could never
-  // succeed for them. Send them straight in.
-  if (!needsPassword(identities)) {
+  // succeed for them. Send them straight in. The decision itself lives in
+  // inviteDestination (tested exhaustively in tests/auth/invite-branch.test.ts);
+  // this is just the acting on it.
+  if (inviteDestination(identities) === 'dashboard') {
     redirect('/dashboard')
   }
 
