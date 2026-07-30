@@ -42,6 +42,12 @@ model User {
   role          Role
   profession    Profession?
   externalId    Int?        @unique
+  /// Supabase auth.users.id. NULL means a profile with no account — a real
+  /// roster record (e.g. imported from staff.csv) that has never been invited.
+  authUserId    String?     @unique
+  /// Set when a manager offboards someone. The Supabase user is banned at the
+  /// same time; future claims are released. See DECISIONS.md.
+  deactivatedAt DateTime?   @db.Timestamptz(3)
   createdAt     DateTime    @default(now()) @db.Timestamptz(3)
 
   claims        Claim[]     @relation("ClaimHolder")
