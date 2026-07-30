@@ -28,7 +28,7 @@ describe('ChangePasswordForm', () => {
   // browser is enough to take over the account.
   it('verifies the current password before changing it', async () => {
     const user = userEvent.setup()
-    render(<ChangePasswordForm email="ivy@c.test" hasPassword />)
+    render(<ChangePasswordForm email="ivy@c.test" />)
 
     await fillAndSubmit(user, 'old-password', 'brand-new-password')
 
@@ -36,10 +36,16 @@ describe('ChangePasswordForm', () => {
     expect(updateUser).toHaveBeenCalledWith({ password: 'brand-new-password' })
   })
 
+  // This is the single most important assertion in this file. The form has
+  // no branch that skips verification — a member with no password yet sets
+  // their first one through the recovery flow instead (see
+  // app/(app)/account/page.tsx), never through this component — so this test
+  // is the only thing standing between an unattended signed-in browser and a
+  // full account takeover.
   it('does not change the password when the current one is wrong', async () => {
     signInWithPassword.mockResolvedValue({ error: { message: 'Invalid login credentials' } })
     const user = userEvent.setup()
-    render(<ChangePasswordForm email="ivy@c.test" hasPassword />)
+    render(<ChangePasswordForm email="ivy@c.test" />)
 
     await fillAndSubmit(user, 'wrong', 'brand-new-password')
 
@@ -49,7 +55,7 @@ describe('ChangePasswordForm', () => {
 
   it('rejects a short new password before touching the network', async () => {
     const user = userEvent.setup()
-    render(<ChangePasswordForm email="ivy@c.test" hasPassword />)
+    render(<ChangePasswordForm email="ivy@c.test" />)
 
     await fillAndSubmit(user, 'old-password', 'short')
 
@@ -59,47 +65,10 @@ describe('ChangePasswordForm', () => {
 
   it('confirms success in place', async () => {
     const user = userEvent.setup()
-    render(<ChangePasswordForm email="ivy@c.test" hasPassword />)
+    render(<ChangePasswordForm email="ivy@c.test" />)
 
     await fillAndSubmit(user, 'old-password', 'brand-new-password')
 
     expect(await screen.findByRole('status')).toHaveTextContent(/password changed/i)
-  })
-})
-
-/**
- * Spec §5.4.2: a member who accepted their invite via Google has no password —
- * identity linking removed the unconfirmed email identity — and must still be
- * able to ADD one. Verifying a current password they do not have would fail
- * every time and lock them out of the feature the spec promises them.
- */
-describe('ChangePasswordForm for a member with no password yet', () => {
-  it('does not ask for a current password', () => {
-    render(<ChangePasswordForm email="google@c.test" hasPassword={false} />)
-    expect(screen.queryByLabelText(/current password/i)).toBeNull()
-  })
-
-  it('sets the password without a verification round-trip', async () => {
-    const user = userEvent.setup()
-    render(<ChangePasswordForm email="google@c.test" hasPassword={false} />)
-
-    await user.type(screen.getByLabelText(/^new password/i), 'brand-new-password')
-    await user.type(screen.getByLabelText(/confirm/i), 'brand-new-password')
-    await user.click(screen.getByRole('button', { name: /set password/i }))
-
-    expect(signInWithPassword).not.toHaveBeenCalled()
-    expect(updateUser).toHaveBeenCalledWith({ password: 'brand-new-password' })
-  })
-
-  it('still enforces the length and confirmation rules', async () => {
-    const user = userEvent.setup()
-    render(<ChangePasswordForm email="google@c.test" hasPassword={false} />)
-
-    await user.type(screen.getByLabelText(/^new password/i), 'short')
-    await user.type(screen.getByLabelText(/confirm/i), 'short')
-    await user.click(screen.getByRole('button', { name: /set password/i }))
-
-    expect(await screen.findByRole('alert')).toHaveTextContent(/at least 8/i)
-    expect(updateUser).not.toHaveBeenCalled()
   })
 })
