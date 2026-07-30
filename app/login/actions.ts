@@ -1,25 +1,29 @@
 'use server'
 
-import { AuthError } from 'next-auth'
-import { signIn } from '@/auth'
+import { redirect } from 'next/navigation'
+import { prisma } from '@/lib/db/client'
+import { checkRoster } from '@/lib/auth/roster-gate'
+import { createSupabaseServerClient } from '@/lib/supabase/server'
 
 export interface LoginState {
   error: string | null
 }
 
 /**
- * Server Action behind the login form. Calls the imported `signIn` directly
- * (not the `next-auth/react` client hook) so `redirectTo` — the v5
- * server-side signIn option — does what it says without needing a
- * `/api/auth/[...nextauth]` round trip.
+ * Server Action behind the login form.
  *
- * `signIn` itself throws a Next.js redirect on success, which is not an
- * `AuthError` — only a failed credential check is — so re-throwing anything
- * that isn't an `AuthError` lets that redirect actually happen instead of
- * being swallowed here.
+ * `redirect()` throws a Next.js control-flow signal rather than returning, so
+ * it must sit outside any try/catch that would swallow it — hence the explicit
+ * error returns above it instead of a wrapping try.
+ *
+ * The roster check after a successful password check is not redundant: a
+ * Supabase user can exist without a MedRoster profile (a stale account, or one
+ * created out-of-band), and `currentSessionUser()` returns null for those. Left
+ * unchecked, such a user would sign in "successfully" and then be bounced
+ * straight back to /login by the app layout with nothing explaining why.
  */
 export async function loginAction(_prevState: LoginState, formData: FormData): Promise<LoginState> {
-  const email = String(formData.get('email') ?? '').trim()
+  const email = String(formData.get('email') ?? '').trim().toLowerCase()
   const password = String(formData.get('password') ?? '')
   const next = String(formData.get('next') ?? '').trim()
 
@@ -27,18 +31,19 @@ export async function loginAction(_prevState: LoginState, formData: FormData): P
     return { error: 'Enter both an email and a password.' }
   }
 
-  try {
-    await signIn('credentials', {
-      email,
-      password,
-      redirectTo: next || '/dashboard',
-    })
-  } catch (err) {
-    if (err instanceof AuthError) {
-      return { error: 'Incorrect email or password.' }
-    }
-    throw err
+  const supabase = await createSupabaseServerClient()
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+
+  if (error || !data.user) {
+    return { error: 'Incorrect email or password.' }
   }
 
-  return { error: null }
+  const profile = await prisma.user.findUnique({ where: { authUserId: data.user.id } })
+  const gate = checkRoster(profile)
+  if (!gate.allowed) {
+    await supabase.auth.signOut()
+    return { error: gate.reason }
+  }
+
+  redirect(next || '/dashboard')
 }

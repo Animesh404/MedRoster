@@ -1,25 +1,49 @@
-import NextAuth from 'next-auth'
-import { edgeAuthConfig } from '@/lib/auth/edge-config'
+import { NextResponse, type NextRequest } from 'next/server'
+import { createServerClient } from '@supabase/ssr'
 
-// Uses the edge-safe config (no Prisma/pg) so this module stays loadable in
-// the Edge Runtime — see lib/auth/edge-config.ts. Do NOT import `@/auth` or
-// `@/lib/auth/config` here; both pull in the Credentials provider, which
-// transitively imports `lib/db/client.ts` (Prisma via `@prisma/adapter-pg`,
-// which uses Node-only `pg` internals unavailable at the edge).
-const { auth } = NextAuth(edgeAuthConfig)
+/**
+ * Two jobs, and the order matters.
+ *
+ *  1. Refresh the Supabase session cookie. Access tokens are short-lived; if
+ *     nothing refreshes them a signed-in user is silently logged out mid-visit.
+ *     The refreshed cookies are written onto `res`, which is why every path
+ *     below must return THAT response object — returning a fresh
+ *     `NextResponse.next()` would drop the refresh on the floor.
+ *  2. Redirect unauthenticated requests to /login.
+ *
+ * This file must not import Prisma or `@/lib/db/client`: it runs in the Edge
+ * Runtime, which lacks the Node internals `pg` needs. That is also why it can
+ * only ask "is there a session?" and not "is this member still active?" —
+ * deactivation is caught in app/(app)/layout.tsx, which can reach the database.
+ */
+export async function middleware(req: NextRequest) {
+  let res = NextResponse.next({ request: req })
 
-export default auth((req) => {
-  const isApp = req.nextUrl.pathname.startsWith('/dashboard')
-    || req.nextUrl.pathname.startsWith('/shifts')
-    || req.nextUrl.pathname.startsWith('/my-shifts')
-    || req.nextUrl.pathname.startsWith('/import')
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
+    {
+      cookies: {
+        getAll: () => req.cookies.getAll(),
+        setAll: (cookiesToSet) => {
+          for (const { name, value } of cookiesToSet) req.cookies.set(name, value)
+          res = NextResponse.next({ request: req })
+          for (const { name, value, options } of cookiesToSet) res.cookies.set(name, value, options)
+        },
+      },
+    },
+  )
 
-  if (isApp && !req.auth) {
+  const { data } = await supabase.auth.getUser()
+
+  if (!data.user) {
     const url = new URL('/login', req.nextUrl.origin)
     url.searchParams.set('next', req.nextUrl.pathname)
-    return Response.redirect(url)
+    return NextResponse.redirect(url)
   }
-})
+
+  return res
+}
 
 export const config = {
   matcher: ['/dashboard/:path*', '/shifts/:path*', '/my-shifts/:path*', '/import/:path*'],
