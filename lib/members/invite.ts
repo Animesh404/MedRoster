@@ -17,6 +17,7 @@ export interface InviteAdminPort {
     id: string,
     attrs: { app_metadata?: Record<string, unknown> },
   ): Promise<{ data: { user: { id: string } | null }; error: unknown }>
+  /** Unused by invite/resend/revoke — kept on the port for Task 5's members-list route adapter, which lists Supabase users against the roster. */
   listUsers(): Promise<{ data: { users: { id: string; email?: string }[] }; error: unknown }>
   deleteUser(id: string): Promise<{ error: unknown }>
 }
@@ -92,10 +93,18 @@ export async function resendInvite(
     return createAppError('NOT_FOUND', 'That person has no pending invite.')
   }
 
+  // Verified against the local GoTrue stack (Mailpit), not assumed: a
+  // pending (unconfirmed) invite re-sends with 200 and a fresh email — no
+  // error at all. `email_exists` is GoTrue's answer only once the person has
+  // already accepted, and in that case NO mail goes out. So `email_exists` is
+  // not a tolerable "already sent" outcome to fold into `{ ok: true }` — it is
+  // the one error worth a distinct message, and every other error is a
+  // genuine failure. Do not restore an `email_exists` tolerance here.
   const { error } = await admin.inviteUserByEmail(profile.email, { redirectTo })
-  // `email_exists` is the expected answer here — the auth user was created by
-  // the original invite. Supabase still re-sends the mail, which is the point.
-  if (error && (error as { code?: string }).code !== 'email_exists') {
+  if (error) {
+    if ((error as { code?: string }).code === 'email_exists') {
+      return createAppError('ALREADY_CLAIMED', 'That person has already accepted their invite.')
+    }
     return createAppError('INVALID_INPUT', 'Could not resend that invite.')
   }
   return { ok: true }

@@ -14,8 +14,13 @@ const REDIRECT = 'http://localhost:3000/auth/accept-invite'
 // that flag.
 type CreatedCall = { email: string; options: { redirectTo?: string } | undefined }
 
-function fakeAdmin(seed: { id: string; email: string }[] = []) {
-  const users = [...seed]
+// Verified against the local GoTrue stack: an address with a still-pending
+// (unconfirmed) invite re-sends with 200 and a fresh email; only a CONFIRMED
+// address (one that already accepted) gets `email_exists` and no mail. The
+// fake models that distinction with an explicit `confirmed` flag rather than
+// "seen before = email_exists", which is what the old fake got wrong.
+function fakeAdmin(seed: { id: string; email: string; confirmed?: boolean }[] = []) {
+  const users = seed.map((u) => ({ id: u.id, email: u.email, confirmed: u.confirmed ?? false }))
   let next = seed.length + 1
   const calls = {
     invited: [] as CreatedCall[],
@@ -26,10 +31,15 @@ function fakeAdmin(seed: { id: string; email: string }[] = []) {
   const port: InviteAdminPort = {
     inviteUserByEmail: (email, options) => {
       calls.invited.push({ email, options })
-      if (users.some((u) => u.email === email)) {
-        return Promise.resolve({ data: { user: null }, error: { code: 'email_exists' } })
+      const existing = users.find((u) => u.email === email)
+      if (existing) {
+        if (existing.confirmed) {
+          return Promise.resolve({ data: { user: null }, error: { code: 'email_exists' } })
+        }
+        // Pending invite: GoTrue re-sends the mail and returns 200, no error.
+        return Promise.resolve({ data: { user: { id: existing.id } }, error: null })
       }
-      const user = { id: `uid-${next++}`, email }
+      const user = { id: `uid-${next++}`, email, confirmed: false }
       users.push(user)
       return Promise.resolve({ data: { user }, error: null })
     },
@@ -37,7 +47,7 @@ function fakeAdmin(seed: { id: string; email: string }[] = []) {
       calls.updated.push({ id, attrs })
       return Promise.resolve({ data: { user: { id } }, error: null })
     },
-    listUsers: () => Promise.resolve({ data: { users: users.map((u) => ({ ...u })) }, error: null }),
+    listUsers: () => Promise.resolve({ data: { users: users.map((u) => ({ id: u.id, email: u.email })) }, error: null }),
     deleteUser: (id) => {
       calls.deleted.push(id)
       const i = users.findIndex((u) => u.id === id)
@@ -45,7 +55,14 @@ function fakeAdmin(seed: { id: string; email: string }[] = []) {
       return Promise.resolve({ error: null })
     },
   }
-  return { port, calls }
+  // Test-only lever: flips a seeded/created user to "already accepted", so a
+  // test can drive `inviteUserByEmail` into the `email_exists` branch without
+  // reaching into the fake's private state.
+  const confirm = (id: string) => {
+    const user = users.find((u) => u.id === id)
+    if (user) user.confirmed = true
+  }
+  return { port, calls, confirm }
 }
 
 const NURSE = {
@@ -157,6 +174,21 @@ describe('resendInvite', () => {
     const { port } = fakeAdmin()
 
     expect(await resendInvite(db, port, profile.id, REDIRECT)).toMatchObject({ code: 'NOT_FOUND' })
+  })
+
+  // Verified against the local stack: once a person has accepted, GoTrue
+  // answers `email_exists` and sends no mail. Reporting success here would be
+  // a manager clicking "Resend" and being told it worked when nothing sent.
+  it('reports ALREADY_CLAIMED for someone who already accepted, not success', async () => {
+    const db = await getTestDb()
+    const { port, confirm } = fakeAdmin()
+    const { userId } = (await inviteMember(db, port, NURSE)) as { userId: number }
+    confirm('uid-1')
+
+    const result = await resendInvite(db, port, userId, REDIRECT)
+
+    expect(result).toMatchObject({ code: 'ALREADY_CLAIMED' })
+    expect(result).not.toEqual({ ok: true })
   })
 })
 
