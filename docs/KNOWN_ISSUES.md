@@ -1,9 +1,12 @@
 # Known issues
 
-## Claim contention returns HTTP 500 instead of a clean rejection under load
+## ~~Claim contention returns HTTP 500 instead of a clean rejection under load~~ — FIXED
 
-**Status:** open, pre-existing, not auth-related. Found during the Supabase Auth
-migration (2026-07-31) but present well before it.
+**Status:** fixed 2026-07-31 (see the "Fix" section at the end). Kept here because
+the diagnosis took two attempts and the first one was wrong in an instructive way.
+
+Pre-existing and not auth-related; found during the Supabase Auth migration but
+present well before it.
 
 **Symptom.** `tests/concurrency/claim.test.ts` > "lets exactly 3 of 50 simultaneous
 nurses onto a 3-nurse shift" fails intermittently (~50% of full-suite runs) while
@@ -50,3 +53,29 @@ hardware, 6% received a 500 `INTERNAL_ERROR` where they should have seen a clean
 
 An earlier diagnosis attributed this to `withRetry`'s 3-attempt budget. That was wrong —
 raising `attempts` would change nothing, because the failing code is never retried.
+
+## Fix (2026-07-31)
+
+All four of the above landed:
+
+1. **`TX_OPTIONS.maxWait: 15_000`** (`lib/rules/assign.ts`) — up from Prisma's 2s default,
+   which the 50-claimant burst sat right on the edge of.
+2. **`withRetry` recognises P2028/P2024**, and backs off exponentially with jitter instead
+   of linearly. The old 10/20/30ms schedule retried every loser inside the same narrow
+   window — a thundering herd against a lock that admits one at a time.
+3. **Exhaustion becomes `BUSY` → HTTP 503** with an actionable message, via `toBusyError`.
+   Non-capacity errors are still rethrown, so a genuine bug is not disguised as congestion.
+4. **Pool sized deliberately** (`DATABASE_POOL_MAX`, default 20) instead of inheriting
+   node-postgres' default of 10.
+
+Verification: `tests/concurrency/claim.test.ts` previously failed roughly half of
+full-suite runs on this hardware; it now passes three consecutive runs. Direct coverage
+lives in `tests/rules/retry.test.ts` and `tests/rules/capacity.test.ts` — the translation
+is tested by injecting the error rather than provoking real contention, deliberately,
+since load-dependence is exactly what made this bug hard to see.
+
+**Not fixed, and worth knowing:** `assignClaim` still isn't idempotent from the caller's
+perspective. A client that retries a `BUSY` is safe (the transaction never ran), but a
+client that retries after a genuine timeout mid-transaction could still double-submit.
+The unique constraint on `(shiftId, userId)` catches that today; a mutation-id-keyed
+dedup would be the fuller answer.
