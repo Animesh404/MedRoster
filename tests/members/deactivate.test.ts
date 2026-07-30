@@ -135,7 +135,7 @@ describe('deactivateMember', () => {
 
   it('is idempotent — deactivating twice changes nothing the second time', async () => {
     const { db, nurse } = await seedMemberWithClaims()
-    const { port } = fakeAdmin()
+    const { port, banned } = fakeAdmin()
 
     const first = await deactivateMember(db, port, nurse.id, { now: NOW })
     const before = await db.user.findUniqueOrThrow({ where: { id: nurse.id } })
@@ -145,7 +145,17 @@ describe('deactivateMember', () => {
     expect(first).toMatchObject({ releasedShiftIds: expect.any(Array) })
     expect(second).toMatchObject({ releasedShiftIds: [] })
     expect(after.deactivatedAt!.getTime()).toBe(before.deactivatedAt!.getTime())
+    // Pinned, not incidental: the second call short-circuits on the
+    // already-deactivated profile before it ever reaches the admin API, so
+    // a repeat deactivation does not re-ban an already-banned account.
+    expect(banned).toHaveLength(1)
   })
+  // NOTE: the above is sequential — it awaits the first call to completion
+  // before starting the second, so it only proves ordinary re-invocation is
+  // safe. The genuinely concurrent case (two overlapping calls racing under
+  // READ COMMITTED) is covered separately in
+  // tests/concurrency/deactivate.test.ts, which also asserts no duplicate
+  // shift.claims_dropped event and no double-release of the claim.
 
   it('refuses to deactivate somebody who does not exist', async () => {
     const db = await getTestDb()
