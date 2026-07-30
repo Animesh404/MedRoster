@@ -19,7 +19,16 @@ import { createSupabaseServerClient } from '@/lib/supabase/server'
  * inbox, not that they are still a member — an invite sent last week to
  * somebody since deactivated must not become a session.
  */
-const ALLOWED_TYPES = new Set<EmailOtpType>(['invite', 'recovery', 'magiclink', 'email', 'email_change'])
+// Exactly the three types our templates emit (supabase/templates/*.html).
+// `email_change` is deliberately excluded: verifyOtp applies an email change
+// to auth.users BEFORE this route's roster gate ever runs, and nothing here
+// mirrors that onto Prisma's User.email. That desyncs the two — the member
+// stays signed in (we key on uid), but magic link, Google, and recovery all
+// silently stop working for them, and resendInvite would keep mailing the
+// old address. Do not re-add it until User.email is kept in sync with a
+// confirmed auth email change. `email` (bare, non-change confirmation) is
+// excluded too: enable_confirmations = false means GoTrue never issues it.
+const ALLOWED_TYPES = new Set<EmailOtpType>(['invite', 'recovery', 'magiclink'])
 
 function isAllowedType(value: string | null): value is EmailOtpType {
   return value !== null && ALLOWED_TYPES.has(value as EmailOtpType)

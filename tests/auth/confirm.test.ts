@@ -109,6 +109,16 @@ describe('GET /auth/confirm', () => {
     expect(verified.calls).toHaveLength(0)
   })
 
+  // email_change is a real EmailOtpType GoTrue understands, but verifyOtp
+  // applies it to auth.users before this gate runs and nothing here mirrors
+  // that onto Prisma's User.email — accepting it would desync the two. Must
+  // stay rejected until that sync exists.
+  it('rejects an email_change otp type', async () => {
+    const res = await GET(url({ token_hash: 'h', type: 'email_change', next: '/dashboard' }))
+    expect(new URL(res.headers.get('location')!).pathname).toBe('/login')
+    expect(verified.calls).toHaveLength(0)
+  })
+
   // `next` comes from an email we generated, but the route is publicly
   // reachable and the parameter is attacker-controllable in a crafted link.
   // Same open-redirect class that bit the login action in Plan 1.
