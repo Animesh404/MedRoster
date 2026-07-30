@@ -40,7 +40,7 @@ describe('currentSessionUser', () => {
     const profile = await db.user.create({
       data: {
         email: 'nurse@c.test', name: 'Nina Nurse', role: 'STAFF',
-        profession: 'NURSE', authUserId: 'auth-uid-1', passwordHash: 'x',
+        profession: 'NURSE', authUserId: 'auth-uid-1',
       },
     })
     authUser.current = { id: 'auth-uid-1' }
@@ -63,7 +63,7 @@ describe('currentSessionUser', () => {
     await db.user.create({
       data: {
         email: 'gone@c.test', name: 'Gone Away', role: 'STAFF',
-        profession: 'DOCTOR', authUserId: 'auth-uid-2', passwordHash: 'x',
+        profession: 'DOCTOR', authUserId: 'auth-uid-2',
         deactivatedAt: new Date(),
       },
     })
@@ -77,7 +77,7 @@ describe('currentSessionUser', () => {
     await db.user.create({
       data: {
         email: 'boss@c.test', name: 'Dana Boss', role: 'MANAGER',
-        profession: null, authUserId: 'auth-uid-3', passwordHash: 'x',
+        profession: null, authUserId: 'auth-uid-3',
       },
     })
     // The token carries a CONFLICTING role/profession claim — STAFF/NURSE —
@@ -96,7 +96,7 @@ describe('currentSessionUser', () => {
     await db.user.create({
       data: {
         email: 'ghost@c.test', name: 'Ghost Manager', role: 'STAFF',
-        profession: 'DOCTOR', authUserId: 'auth-uid-4', passwordHash: 'x',
+        profession: 'DOCTOR', authUserId: 'auth-uid-4',
         deactivatedAt: new Date(),
       },
     })

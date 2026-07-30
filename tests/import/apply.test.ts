@@ -4,7 +4,7 @@ import { runShiftImport, runStaffImport } from '@/lib/import'
 import { applyShiftImport, applyStaffImport } from '@/lib/import/apply'
 import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
 
-const META = { source: 'SEED' as const, filename: 'staff.csv', passwordHash: 'x' }
+const META = { source: 'SEED' as const, filename: 'staff.csv' }
 
 beforeEach(resetTestDb)
 afterAll(stopTestDb)

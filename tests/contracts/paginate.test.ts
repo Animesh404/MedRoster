@@ -41,7 +41,7 @@ describe('paginate', () => {
     const db = await getTestDb()
     for (let i = 0; i < n; i++) {
       await db.user.create({
-        data: { email: `u${i}@c.test`, name: `User ${i}`, passwordHash: 'x', role: 'STAFF', profession: 'NURSE' },
+        data: { email: `u${i}@c.test`, name: `User ${i}`, role: 'STAFF', profession: 'NURSE' },
       })
     }
     return db

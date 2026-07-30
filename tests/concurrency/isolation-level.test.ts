@@ -59,7 +59,7 @@ describe('isolation level is load-bearing, not incidental', () => {
       Array.from({ length: 10 }, (_, i) =>
         db.user.create({
           data: {
-            email: `rr${i}@c.test`, name: `RR Nurse ${i}`, passwordHash: 'x',
+            email: `rr${i}@c.test`, name: `RR Nurse ${i}`,
             role: 'STAFF', profession: 'NURSE',
           },
         })),

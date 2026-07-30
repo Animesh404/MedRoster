@@ -7,8 +7,6 @@ export interface ImportMeta {
   source: ImportSource
   filename: string
   actorId?: number
-  /** Pre-hashed shared demo password for imported staff. */
-  passwordHash: string
 }
 
 /** Writes the ImportRun plus one ImportRowResult per source line. */
@@ -55,7 +53,6 @@ export async function applyStaffImport(
         externalId: record.externalId,
         email: record.email,
         name: record.name,
-        passwordHash: meta.passwordHash,
         role: 'STAFF',
         profession: record.profession,
       },

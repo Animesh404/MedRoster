@@ -123,7 +123,7 @@ async function makeUser(role: 'STAFF' | 'MANAGER', profession: 'NURSE' | null, i
   const db = await getTestDb()
   return db.user.create({
     data: {
-      email: `route-${i}@c.test`, name: `Route User ${i}`, passwordHash: 'x',
+      email: `route-${i}@c.test`, name: `Route User ${i}`,
       role, profession,
     },
   })

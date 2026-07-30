@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server'
-import bcrypt from 'bcryptjs'
 import { prisma } from '@/lib/db/client'
 import { withAuth, errorResponse } from '@/lib/auth/with-auth'
 import { createAppError } from '@/lib/domain/errors'
@@ -97,12 +96,10 @@ export const POST = withAuth('import:run', async (req, ctx) => {
         : 'File contains binary data and cannot be processed as CSV.',
     ))
   }
-  const passwordHash = await bcrypt.hash(process.env.SEED_PASSWORD ?? 'medroster123', 10)
   const meta = {
     source: 'UPLOAD' as const,
     filename: normalizeFilename(file.name),
     actorId: ctx.principal.id,
-    passwordHash,
   }
 
   // READ COMMITTED (TX_OPTIONS) plus a raised timeout: a shift upload can

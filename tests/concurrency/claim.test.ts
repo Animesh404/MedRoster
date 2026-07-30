@@ -23,7 +23,7 @@ async function seedShiftAndNurses(nurseCount: number, requiredNurses = 2) {
     Array.from({ length: nurseCount }, (_, i) =>
       db.user.create({
         data: {
-          email: `n${i}@c.test`, name: `Nurse ${i}`, passwordHash: 'x',
+          email: `n${i}@c.test`, name: `Nurse ${i}`,
           role: 'STAFF', profession: 'NURSE',
         },
       })),
@@ -156,7 +156,7 @@ describe('concurrent claiming', () => {
     const { shift, nurses } = await seedShiftAndNurses(1, 1)
     const nurse = nurses[0]!
     const manager = await db.user.create({
-      data: { email: 'mgr@c.test', name: 'Manager', passwordHash: 'x', role: 'MANAGER', profession: null },
+      data: { email: 'mgr@c.test', name: 'Manager', role: 'MANAGER', profession: null },
     })
 
     const results = await Promise.all([
@@ -172,7 +172,7 @@ describe('concurrent claiming', () => {
   it('records assignedById as the manager on assignment and null on self-claim', async () => {
     const db = await getTestDb()
     const manager = await db.user.create({
-      data: { email: 'mgr2@c.test', name: 'Manager', passwordHash: 'x', role: 'MANAGER', profession: null },
+      data: { email: 'mgr2@c.test', name: 'Manager', role: 'MANAGER', profession: null },
     })
     const { shift, nurses } = await seedShiftAndNurses(2, 2)
     const [selfNurse, assignedNurse] = nurses
