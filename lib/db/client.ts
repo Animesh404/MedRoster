@@ -13,7 +13,18 @@ function createPrisma(): PrismaClient {
   // Prisma 7 removed the `datasources: { db: { url } }` constructor override in
   // favour of mandatory driver adapters, so the connection is wired through
   // @prisma/adapter-pg rather than passed straight to PrismaClient.
-  const adapter = new PrismaPg({ connectionString: url })
+  // Pool size is deliberate, not inherited. node-postgres defaults to max 10,
+  // and `withOrderedLocks` serialises every claimant of one shift behind a
+  // single advisory lock — a transaction blocked on that lock still holds its
+  // connection. Ten connections therefore cap how many claimants can even be
+  // queued before the rest start timing out at the pool rather than at the
+  // lock, which is the P2028/P2024 failure in docs/KNOWN_ISSUES.md.
+  //
+  // Overridable because the right number is deployment-specific: Supabase's
+  // pooler and a local Postgres have very different budgets, and a serverless
+  // deployment multiplies this by its instance count.
+  const maxConnections = Number(process.env.DATABASE_POOL_MAX ?? 20)
+  const adapter = new PrismaPg({ connectionString: url, max: maxConnections })
 
   return new PrismaClient({
     adapter,

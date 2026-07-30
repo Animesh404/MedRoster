@@ -89,7 +89,17 @@ describe('isolation level is load-bearing, not incidental', () => {
     // future edit changes or drops the isolation level at any $transaction
     // call site in assign.ts OR edit.ts — both share the same `withOrderedLocks`
     // correctness argument (MINOR-6).
-    expect(TX_OPTIONS).toEqual({ isolationLevel: 'ReadCommitted' })
+    // Deliberately exact rather than `toMatchObject`: the point of this guard
+    // is that ANY drift in the shared transaction options is noticed, not just
+    // a change to the isolation level. `maxWait`/`timeout` were added to fix
+    // the P2028 capacity failure in docs/KNOWN_ISSUES.md — if you are here
+    // because this assertion failed, confirm your change is intentional and
+    // update the expected shape, rather than relaxing the comparison.
+    expect(TX_OPTIONS).toEqual({
+      isolationLevel: 'ReadCommitted',
+      maxWait: 15_000,
+      timeout: 20_000,
+    })
 
     for (const file of ['assign.ts', 'edit.ts']) {
       const source = readFileSync(new URL(`../../lib/rules/${file}`, import.meta.url), 'utf8')
