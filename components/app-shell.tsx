@@ -35,6 +35,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   { href: '/shifts/new', label: 'New shift', permission: 'shift:create' },
   { href: '/import', label: 'Import', permission: 'import:read' },
+  { href: '/members', label: 'Members', permission: 'member:read' },
 ]
 
 const ROLE_LABEL: Record<Principal['role'], string> = {

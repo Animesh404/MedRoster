@@ -6,6 +6,10 @@ export const ALL_PERMISSIONS = [
   'claim:delete:self', 'claim:delete:any',
   'import:run', 'import:read',
   'staff:read',
+  // Manager-only. `staff:read` above is deliberately NOT one of these: it is a
+  // STAFF-level directory of names and professions for the assignment UI, and
+  // it must not grow into "read every colleague's email and account state".
+  'member:read', 'member:invite', 'member:manage',
 ] as const
 
 export type Permission = (typeof ALL_PERMISSIONS)[number]
