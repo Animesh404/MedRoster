@@ -1,29 +1,23 @@
 import type { ReactNode } from 'react'
 import { redirect } from 'next/navigation'
-import { auth } from '@/auth'
 import { AppShell } from '@/components/app-shell'
-import type { Principal } from '@/lib/auth/permissions'
+import { currentSessionUser } from '@/lib/auth/session'
 
 /**
  * Wraps every guarded route (`/dashboard`, `/my-shifts`, `/shifts/*`,
- * `/import`) in the shell. `middleware.ts` already redirects an unauthenticated
- * request before it gets here (§middleware.ts); this check is defense in
- * depth, not the primary guard.
+ * `/import`) in the shell. `middleware.ts` already redirects a request with no
+ * Supabase session before it gets here; this check is defense in depth AND the
+ * only place a *deactivated* member is caught, since middleware cannot reach
+ * the database to know that.
  */
 export default async function AppLayout({ children }: { children: ReactNode }) {
-  const session = await auth()
-  if (!session?.user) {
+  const session = await currentSessionUser()
+  if (!session) {
     redirect('/login')
   }
 
-  const principal: Principal = {
-    id: session.user.id,
-    role: session.user.role,
-    profession: session.user.profession,
-  }
-
   return (
-    <AppShell principal={principal} name={session.user.name} email={session.user.email}>
+    <AppShell principal={session.principal} name={session.name} email={session.email}>
       {children}
     </AppShell>
   )

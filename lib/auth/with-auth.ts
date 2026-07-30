@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { currentSessionUser } from './session'
 import { statusFor, type AppError } from '@/lib/domain/errors'
 import { can, type Permission, type Principal } from './permissions'
 
@@ -36,16 +36,12 @@ export function withAuth<P = Record<string, string>>(
   handler: AuthedHandler<P>,
 ) {
   const wrapped = async (req: Request, ctx: { params: Promise<P> }): Promise<Response> => {
-    const session = await auth()
-    if (!session?.user) {
+    const session = await currentSessionUser()
+    if (!session) {
       return NextResponse.json({ error: { code: 'FORBIDDEN', message: 'Sign in required.' } }, { status: 401 })
     }
 
-    const principal: Principal = {
-      id: session.user.id,
-      role: session.user.role,
-      profession: session.user.profession,
-    }
+    const principal: Principal = session.principal
 
     if (!can(principal, permission)) {
       return NextResponse.json(
