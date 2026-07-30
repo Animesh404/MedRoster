@@ -9,6 +9,8 @@ import 'dotenv/config'
 import bcrypt from 'bcryptjs'
 import { prisma } from '@/lib/db/client'
 import { runSeed } from '@/lib/seed/run-seed'
+import { createSupabaseAdminClient } from '@/lib/supabase/admin'
+import { ensureAuthAccounts, type AuthAdminPort } from '@/lib/seed/auth-accounts'
 
 const SEED_PASSWORD = process.env.SEED_PASSWORD ?? 'medroster123'
 
@@ -23,6 +25,31 @@ async function main(): Promise<void> {
   } else {
     console.log(`claims  ${result.existingClaims} already present, skipping claim seeding`)
   }
+
+  const supabaseAdmin = createSupabaseAdminClient().auth.admin
+
+  // Adapted explicitly rather than passed straight through: supabase-js types
+  // `listUsers()` as returning a union whose members carry extra fields, which
+  // is wider than AuthAdminPort and will not assign structurally. Writing the
+  // three calls out keeps the port honest without an `as unknown as` cast that
+  // would silently survive a breaking change in supabase-js.
+  const adminPort: AuthAdminPort = {
+    listUsers: async () => {
+      const { data, error } = await supabaseAdmin.listUsers({ perPage: 1000 })
+      return { data: { users: data?.users ?? [] }, error }
+    },
+    createUser: async (attrs) => {
+      const { data, error } = await supabaseAdmin.createUser(attrs)
+      return { data: { user: data?.user ?? null }, error }
+    },
+    updateUserById: async (id, attrs) => {
+      const { data, error } = await supabaseAdmin.updateUserById(id, attrs)
+      return { data: { user: data?.user ?? null }, error }
+    },
+  }
+
+  const accounts = await ensureAuthAccounts(prisma, adminPort, { password: SEED_PASSWORD })
+  console.log(`auth    ${accounts.created} created, ${accounts.updated} updated`)
 }
 
 main()
