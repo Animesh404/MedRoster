@@ -7,9 +7,10 @@
 // though `.env` sets it right there on disk.
 import 'dotenv/config'
 import bcrypt from 'bcryptjs'
+import { createClient } from '@supabase/supabase-js'
 import { prisma } from '@/lib/db/client'
 import { runSeed } from '@/lib/seed/run-seed'
-import { createSupabaseAdminClient } from '@/lib/supabase/admin'
+import { getClientEnv, getServerEnv } from '@/lib/config/env'
 import { ensureAuthAccounts, type AuthAdminPort } from '@/lib/seed/auth-accounts'
 
 const SEED_PASSWORD = process.env.SEED_PASSWORD ?? 'medroster123'
@@ -26,7 +27,22 @@ async function main(): Promise<void> {
     console.log(`claims  ${result.existingClaims} already present, skipping claim seeding`)
   }
 
-  const supabaseAdmin = createSupabaseAdminClient().auth.admin
+  // Built inline rather than via `@/lib/supabase/admin` (`createSupabaseAdminClient`):
+  // that module opens with `import 'server-only'`, which throws unconditionally
+  // outside a bundler-mediated React Server Component resolution — and this
+  // script runs as a plain Node/tsx process, including as the command Prisma
+  // 7 invokes for `npx prisma db seed` / `migrate reset` (see
+  // `prisma.config.ts`'s `migrations.seed`). Importing the guarded module
+  // here broke every one of those. Do not "helpfully" swap this back for
+  // `createSupabaseAdminClient()` — six duplicated lines of client
+  // construction here are cheaper than re-breaking `prisma db seed`, and
+  // cheaper than a `--conditions=react-server` override, which changes
+  // module resolution for every package in this process, not just this one.
+  const supabaseAdmin = createClient(
+    getClientEnv().supabaseUrl,
+    getServerEnv().supabaseServiceRoleKey,
+    { auth: { autoRefreshToken: false, persistSession: false } },
+  ).auth.admin
 
   // Adapted explicitly rather than passed straight through: supabase-js types
   // `listUsers()` as returning a union whose members carry extra fields, which

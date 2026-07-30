@@ -82,7 +82,11 @@ export async function ensureAuthAccounts(
         // listUsers. Re-read and adopt rather than failing the whole seed.
         const { data: refreshed } = await admin.listUsers()
         const found = refreshed.users.find((u) => u.email?.toLowerCase() === email)
-        if (!found) throw new Error(`Could not create or find a Supabase user for ${email}`)
+        if (!found) {
+          throw new Error(
+            `Could not create or find a Supabase user for ${email}: ${JSON.stringify(error)}`,
+          )
+        }
         authUserId = found.id
         await admin.updateUserById(authUserId, { password: opts.password, app_metadata: appMetadata })
         updated += 1
