@@ -23,9 +23,12 @@ export type { AppEnv }
  */
 
 const serverSchema = z.object({
-  AUTH_SECRET: z
+  SUPABASE_SERVICE_ROLE_KEY: z
     .string()
-    .min(1, 'AUTH_SECRET is required — generate one with `openssl rand -base64 32`'),
+    .min(1, 'SUPABASE_SERVICE_ROLE_KEY is required — `supabase start` prints it'),
+  APP_URL: z
+    .string()
+    .url('APP_URL must be an absolute origin, e.g. http://localhost:3000'),
   CLINIC_TZ: z.string().min(1).default('Europe/London'),
   SEED_PASSWORD: z.string().min(1).default('medroster123'),
 })
@@ -47,18 +50,32 @@ export interface ServerEnv {
   databaseUrl: string
   /** Which variable the database URL came from — surfaced in the boot banner. */
   databaseSource: string
-  authSecret: string
+  /** Service-role key. Server-only; see lib/supabase/admin.ts. */
+  supabaseServiceRoleKey: string
+  /** Absolute origin for auth redirect targets. */
+  appUrl: string
   clinicTz: string
   seedPassword: string
 }
 
 let cached: ServerEnv | undefined
 
+/** Clears the memoised config. Tests only — production reads a fixed process.env. */
+export function resetServerEnvCache(): void {
+  cached = undefined
+}
+
 /**
  * Server-only configuration. Throws a readable, aggregated error rather than
  * letting a missing value fail somewhere unhelpful later.
+ *
+ * `env` is injectable so the tests can exercise missing/invalid values without
+ * mutating the real `process.env`, matching `resolveDatabase()` in
+ * ./database-url.ts.
  */
-export function getServerEnv(): ServerEnv {
+export function getServerEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): ServerEnv {
   if (cached) return cached
 
   if (typeof window !== 'undefined') {
@@ -68,8 +85,8 @@ export function getServerEnv(): ServerEnv {
     )
   }
 
-  const db = resolveDatabase()
-  const parsed = serverSchema.safeParse(process.env)
+  const db = resolveDatabase(env)
+  const parsed = serverSchema.safeParse(env)
 
   if (!parsed.success) {
     const details = parsed.error.issues
@@ -82,7 +99,8 @@ export function getServerEnv(): ServerEnv {
     appEnv: db.appEnv,
     databaseUrl: db.url,
     databaseSource: db.source,
-    authSecret: parsed.data.AUTH_SECRET,
+    supabaseServiceRoleKey: parsed.data.SUPABASE_SERVICE_ROLE_KEY,
+    appUrl: parsed.data.APP_URL,
     clinicTz: parsed.data.CLINIC_TZ,
     seedPassword: parsed.data.SEED_PASSWORD,
   }
