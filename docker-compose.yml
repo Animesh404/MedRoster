@@ -1,28 +1,22 @@
+# Runs only the `app` service. Postgres and auth now live in the Supabase CLI
+# stack (`npx supabase start ...`, see README) — auth and application data must
+# share one database, and the CLI stack owns it. Start that stack first.
+#
+# `host.docker.internal` rather than `127.0.0.1`: the app runs inside this
+# container, and `127.0.0.1` there means the container itself, not the host
+# machine the CLI stack is listening on.
 services:
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: medroster
-      POSTGRES_PASSWORD: medroster
-      POSTGRES_DB: medroster
-    ports: ['5432:5432']
-    volumes: ['pgdata:/var/lib/postgresql/data']
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U medroster']
-      interval: 3s
-      timeout: 3s
-      retries: 20
-
   app:
     build: .
-    depends_on:
-      db: { condition: service_healthy }
     environment:
-      DATABASE_URL: postgresql://medroster:medroster@db:5432/medroster
+      DATABASE_URL: postgresql://postgres:postgres@host.docker.internal:54322/postgres
+      NEXT_PUBLIC_SUPABASE_URL: http://host.docker.internal:54321
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      APP_URL: http://localhost:3000
       CLINIC_TZ: Europe/London
       SEED_PASSWORD: medroster123
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     ports: ['3000:3000']
     command: sh -c "npx prisma migrate deploy && npx tsx prisma/seed.ts && npm run start"
-
-volumes:
-  pgdata:

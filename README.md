@@ -9,26 +9,42 @@ decision the importer made is readable in the UI.
 
 ---
 
-## Run it
+## Local setup
 
-One command. Brings up Postgres, migrates, seeds from the CSVs, and serves the app:
+Requires Docker. The Supabase CLI ships as a dev dependency — no global install.
 
 ```bash
-cp .env.example .env      # then set AUTH_SECRET — `openssl rand -base64 32`
-docker compose up
+npm install
+npx supabase start -x studio,imgproxy,edge-runtime,logflare,vector,supavisor,storage-api,postgres-meta
+cp .env.example .env    # then paste the keys `npx supabase start` printed
+npx prisma migrate deploy
+npm run db:seed
+npm run dev
 ```
 
 Then open **http://localhost:3000**.
 
-Prefer to run it directly:
+The `-x` flags skip optional services (Studio, storage, analytics) that are not
+needed for auth and do not come up reliably on every machine. Postgres runs on
+`54322`, the auth API on `54321`, and invite/recovery emails land in Mailpit at
+<http://127.0.0.1:54324>.
+
+Seeded credentials are unchanged — see "Sign in" below.
+
+### Run the app in a container
+
+`docker-compose.yml` runs just the `app` service — Postgres and auth still come
+from the Supabase CLI stack above, which must already be running (`npx supabase
+start ...`, as above). The container can't reach the host at `127.0.0.1`, so the
+compose file points at `host.docker.internal` instead, and reads
+`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` / `SUPABASE_SERVICE_ROLE_KEY` out of your
+`.env` (Compose loads a project-root `.env` for variable substitution automatically):
 
 ```bash
-docker compose up -d db   # Postgres only
-npm ci
-npm run db:migrate
-npm run db:seed
-npm run dev
+docker compose up
 ```
+
+It migrates, seeds, and serves on **http://localhost:3000**.
 
 ## Sign in
 
@@ -37,11 +53,18 @@ Every seeded account uses the password **`medroster123`** (from `SEED_PASSWORD`)
 | Role | Email | Why this one |
 |---|---|---|
 | Manager | `manager@clinicmail.test` | Full access — coverage, editing, import |
-| Nurse | `zainab.volkov@clinicmail.test` | Holds **16** shifts, so overlap rejections fire immediately |
-| Doctor | `omar.patel@clinicmail.test` | Sees a different set of open slots |
-| Receptionist | `hiro.iyer@clinicmail.test` | The role most shifts don't need — shows an empty rail |
+| Doctor | `chloe.hussain@clinicmail.test` | A doctor's view of the roster |
+| Nurse | `ivy.bell@clinicmail.test` | A nurse's view — claiming and open slots |
+| Receptionist | `hiro.petrova@clinicmail.test` | A receptionist's view of the roster |
 
 The login page lists these with click-to-fill buttons, so you don't need this table.
+
+These four are also the only imported staff with a real login: the seed gives
+just this one-per-profession set an actual Supabase Auth account (email
+confirmed, password set). Every other row the importer produced — roughly
+thirty more staff — is deliberately left without one. A spreadsheet row was
+never a login, and leaving the rest account-less is what gives the members
+page (a later milestone) real people to invite.
 
 > Zainab Volkov is also the person the importer merged: the spreadsheet filed her
 > under both staff `999` and `105`, and the lower id won. That decision is visible
@@ -77,10 +100,10 @@ spreadsheet. For every row: the raw source line, what was wrong, and what was
 done. `staff.csv` → 34 accepted, 3 merged, 4 rejected of 41. The Janitor row
 explains why a profession this clinic doesn't schedule can't be imported.
 
-**Try to break a claim.** Sign in as Zainab and claim something that overlaps a
-shift she already holds, or a role that's already full. The refusal is the
-server's own message, naming the conflict — the button flips optimistically and
-rolls back.
+**Try to break a claim.** Sign in as the nurse demo account (Ivy Bell) and claim
+something that overlaps a shift she already holds, or a role that's already
+full. The refusal is the server's own message, naming the conflict — the button
+flips optimistically and rolls back.
 
 **Editing a shift with claims.** As the manager, retime a shift people have
 claimed. You get a preview naming exactly who would be dropped and why, before
@@ -92,7 +115,7 @@ anything is saved.
 |---|---|
 | Next.js 16 (App Router), React 19 | One deployable; server components for the data-heavy screens |
 | Postgres + Prisma 7 | Advisory locks and the transactional guarantees the rules depend on |
-| Auth.js v5, credentials + bcrypt | Role rides in the JWT, so permission checks need no DB round-trip |
+| Supabase Auth, email + password | Session lives in an httpOnly cookie; role is re-derived from the `User` row on every request, not trusted from the token |
 | Zod | One schema per endpoint; types inferred from it on both sides |
 | Tailwind v4 + shadcn/ui | CSS-first tokens; there is no `tailwind.config.ts` |
 | Supabase Realtime (optional) | Live updates; falls back to polling when unconfigured |
@@ -103,7 +126,7 @@ anything is saved.
 `APP_ENV` chooses the database, so switching targets isn't a URL rewrite:
 
 ```
-APP_ENV=development   ->  DATABASE_URL_DEV    (local Docker Postgres)
+APP_ENV=development   ->  DATABASE_URL_DEV    (local Supabase CLI Postgres)
 APP_ENV=production    ->  DATABASE_URL_PROD   (Supabase)
 DATABASE_URL set      ->  wins over both
 ```
@@ -139,7 +162,8 @@ Not currently deployed to a public URL. The Supabase database is migrated and
 seeded and the app runs against it; only the hosting step is outstanding.
 
 To deploy on Vercel: set `APP_ENV=production`, `DATABASE_URL_PROD`,
-`AUTH_SECRET`, `CLINIC_TZ` and the two `NEXT_PUBLIC_SUPABASE_*` values, then run
+`SUPABASE_SERVICE_ROLE_KEY`, `APP_URL`, `CLINIC_TZ` and the two
+`NEXT_PUBLIC_SUPABASE_*` values, then run
 `npm run db:migrate && npm run db:seed` against the target once. Seeding happens
 at deploy time rather than on demand, so the data is present before the first
 request and there is no cold-start penalty on the paths that matter.
