@@ -145,24 +145,79 @@ Without that step, an unattended signed-in browser is enough to take over an acc
 ### 5.4 Passwordless sign-in and the roster gate
 
 Magic link and Google are both enabled, and both are gated to people already on the roster.
-Three layers, because any single one has a hole:
+Three layers, each covering a different hole — they are not redundant, and §5.4.1 records why.
 
-1. **Public signups disabled** in the Supabase dashboard. Admin-created invites are unaffected;
-   self-registration is impossible. *Dashboard configuration — see §8.*
-2. **`signInWithOtp({ shouldCreateUser: false })`** — an unknown email receives nothing instead
-   of silently getting an account.
-3. **`/auth/callback` verification** — after the code exchange, look up a profile by email. No
-   profile, or `deactivatedAt` set → sign out, delete any orphan auth user via the admin API,
-   redirect to `/login` with *"This email isn't on the roster — ask a manager for an invite."*
+1. **Public signups disabled** in the Supabase dashboard. Gates **OAuth only**. Admin-created
+   invites and existing-user sign-ins are unaffected. *Dashboard configuration — see §8.*
+2. **`signInWithOtp({ shouldCreateUser: false })`**. Gates **magic link only**, and is
+   mandatory — layer 1 does not cover this path at all.
+3. **`/auth/callback` verification** — after the code exchange, look up a profile by email.
+   No profile, or `deactivatedAt` set → sign out, delete any orphan auth user via the admin
+   API, redirect to `/login` with *"This email isn't on the roster — ask a manager for an
+   invite."* Catches deactivated members and any auth user without a profile.
 
 The gate decision is implemented as a pure function, `(email, profile) → allow | reason`, so
 the security-critical branch is unit-testable without a browser or a network.
 
-**Open risk.** When a Google identity's email matches an already-invited Supabase user,
-whether Supabase links them into one account or raises an identity conflict depends on the
-project's email-confirmation and identity-linking settings. This will be verified against the
-local stack in step 7 of §7 before the flow is considered done, and this section updated with
-the observed behaviour. No claim is made here about behaviour that has not been observed.
+#### 5.4.1 Verified behaviour — Google identity matching an invited user
+
+Read from `supabase/auth` master (`internal/models/linking.go`, `internal/api/external.go`,
+`internal/api/otp.go`), not from prose documentation, which is ambiguous here.
+
+`DetermineAccountLinking` builds `verifiedEmails` from the **provider's** email claims, so
+`email.Verified` is Google's `email_verified` — not the local user's confirmation state. For a
+Google account it is true, so the early "no verified emails → `CreateAccount`" return is
+skipped. The candidate lookup is then:
+
+```go
+Where("email = any (?) and is_sso_user = false", verifiedEmails).All(&similarUsers)
+```
+
+There is **no filter on email confirmation**. An invited-but-unaccepted user matches,
+`len(similarUsers) == 1`, and the decision is **`LinkAccount`** against that existing user.
+
+Consequences, all load-bearing:
+
+- **Same user record, same uid.** No duplicate account; `authUserId` (§3) stays valid. The
+  original concern does not materialise.
+- **`DisableSignup` is checked only in the `CreateAccount` branch** of
+  `createAccountFromExternalIdentity`, never on `LinkAccount` or `AccountExists`. Layer 1
+  therefore blocks unknown Google emails with `ErrorCodeSignupDisabled` ("Signups not allowed
+  for this instance") while still letting an invited person accept via Google.
+- **`otp.go` never consults `DisableSignup`.** Magic link is gated solely by
+  `shouldCreateUser`; an unknown email yields 422 `ErrorCodeOTPDisabled` ("Signups not allowed
+  for otp"). Layer 2 is the only thing standing between a stranger and an account on that path.
+- **Accepting an invite via Google removes the unconfirmed email identity** (documented
+  behaviour, consistent with the linking rules above). That member ends up with no password
+  and must never be shown the set-password screen — see §5.4.2.
+- **Safe failure mode.** If a provider ever returns `email_verified: false`, `verifiedEmails`
+  is empty, the decision is `CreateAccount`, and layer 1 blocks it. The gate fails closed.
+- **`MultipleAccounts`** is returned if two non-SSO users share an email. A partial unique
+  index makes this near-impossible, but `/auth/callback` handles it as a hard error rather
+  than assuming a single user.
+
+The **Before User Created hook** was evaluated and rejected: it fires only when
+`targetUser == nil && inviteToken == ""`, so it never runs on the linking path this design
+depends on, and layer 1 already covers the case it would catch.
+
+Provider linking domains are left at their default; `config.Experimental.ProviderLinkingDomains`
+is not configured.
+
+#### 5.4.2 Accept-invite branches on arrival
+
+`/auth/accept-invite` must not assume a password is being set:
+
+| Arrival | Behaviour |
+|---|---|
+| Invite email link | Set a password, then active |
+| Google, having been invited | Already active; skip the password step entirely |
+
+A Google-linked member can add a password later from account settings (§5.3) — `updateUser`
+adds one where none exists — but is never blocked on doing so.
+
+**Remaining empirical check** (step 7 of §7): confirm observed behaviour matches this reading
+against the local stack, in particular that the unconfirmed email identity is removed on link.
+Source analysis, not observation, is the basis for this section.
 
 ### 5.5 Deactivation
 
@@ -224,7 +279,8 @@ stack in development).
    features visible.** If this branch is ever abandoned, this is the line to abandon it on.
 5. Invite, accept-invite, members page.
 6. Password reset and change password.
-7. Magic link, Google, roster gate — including the §5.4 verification.
+7. Magic link, Google, roster gate — including the §5.4.1 empirical confirmation and the
+   §5.4.2 accept-invite branching.
 8. Deactivation with claim release and outbox events.
 9. README, `.env.example`, `DECISIONS.md`.
 
@@ -237,7 +293,10 @@ The feature is inert without both of these, and neither can be done in code:
 - **Custom SMTP** in the Supabase dashboard. The built-in mailer is capped near 2 emails/hour
   and only delivers to project team addresses — invites to real people will silently fail to
   arrive.
-- **Public signups disabled** in the dashboard. This is layer one of the roster gate (§5.4).
+- **Public signups disabled** in the dashboard. This is layer one of the roster gate (§5.4),
+  and it gates **OAuth only** — magic link is unaffected by it and is gated in code instead
+  (§5.4.1). Existing users can still sign in; the setting is checked only when a brand-new
+  account would be created.
 
 Both are documented in the README.
 
@@ -274,7 +333,9 @@ login fixture.
 New coverage:
 
 - **Roster gate** — pure function, table-driven: unknown email, deactivated member, active
-  member, profile without `authUserId`.
+  member, profile without `authUserId`, and the `MultipleAccounts` error path (§5.4.1).
+- **Accept-invite branching** — a member who arrived via Google is not shown the set-password
+  step and lands active (§5.4.2).
 - **Deactivation** — against Testcontainers: future claims released, past claims intact,
   outbox rows written.
 - **Permissions** — the three `member:*` entries; RBAC route coverage follows automatically.
