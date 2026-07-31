@@ -57,6 +57,11 @@ env:
   # Local to the runner and thrown away with it. Real secrets live in the
   # repository's GitHub Actions secrets and Vercel's own environment.
   CRON_SECRET: gate-only-not-a-real-secret
+  # The Vercel team the project lives under. `vercel pull` failed with
+  # "Could not retrieve Project Settings" without it — a message that reads like
+  # a broken project link but is what a token scoped to the personal account
+  # says when the project belongs to a team.
+  VERCEL_SCOPE: animesh404s-projects
 
 jobs:
   verify:
@@ -220,12 +225,23 @@ jobs:
 
       - run: npm ci
 
+      - name: Show what the token can reach
+        # Runs before the first real command so a credential problem reads as
+        # one. The previous failure was `Could not retrieve Project Settings`,
+        # which sounds like a broken link and is usually a token that cannot see
+        # the team the project lives in.
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          npx vercel whoami --token="$VERCEL_TOKEN"
+          npx vercel teams ls --token="$VERCEL_TOKEN"
+
       - name: Pull Vercel production environment
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-        run: npx vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+        run: npx vercel pull --yes --environment=production --scope "$VERCEL_SCOPE" --token="$VERCEL_TOKEN"
 
       - name: Apply database migrations
         # Before the new code is serving, not after. A deployment whose code
@@ -247,7 +263,7 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-        run: npx vercel build --prod --token="$VERCEL_TOKEN"
+        run: npx vercel build --prod --scope "$VERCEL_SCOPE" --token="$VERCEL_TOKEN"
 
       - name: Deploy
         id: deploy
@@ -256,7 +272,7 @@ jobs:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
-          url=$(npx vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          url=$(npx vercel deploy --prebuilt --prod --scope "$VERCEL_SCOPE" --token="$VERCEL_TOKEN")
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "Deployed to $url"
 
