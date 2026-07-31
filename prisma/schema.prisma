@@ -160,6 +160,21 @@ model MutationOutcome {
   @@index([createdAt])
 }
 
+/// How far `EventOutbox` has been pruned.
+///
+/// A single row (`id = 1`). Exists so `GET /api/events/since` can tell a client
+/// that its cursor has fallen off the end of the log — without this, a client
+/// polling `WHERE id > lastId` for events that were deleted receives an empty
+/// page and concludes it is CAUGHT UP, silently missing every change since.
+/// That is the failure that made pruning the outbox unsafe.
+model OutboxWatermark {
+  id         Int      @id @default(1)
+  /// Highest `EventOutbox.id` that has been deleted. A client whose cursor is
+  /// below this has provably missed events and must resync rather than poll on.
+  prunedUpTo BigInt   @default(0)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+}
+
 model EventOutbox {
   id         BigInt   @id @default(autoincrement())
   topic      String

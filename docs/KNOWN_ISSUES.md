@@ -232,28 +232,56 @@ and the pruner takes no advisory lock. It does share the connection pool that tu
 bursts into capacity errors, so "cannot contend" would be overstating it.
 
 
-## EventOutbox is also unpruned — and pruning it is NOT the same problem
+## EventOutbox — the lost-cursor signal is fixed; the pruning is deliberately NOT enabled
 
-**Status:** open. Named here because the `MutationOutcome` retention job makes it conspicuous
-by contrast, and because the obvious fix is wrong.
+**Status:** partly fixed 2026-07-31. The signal that makes pruning *possible* is live. The
+deletion is written, tested, and **not wired in**, for a reason found in review.
 
-`EventOutbox` grows by at least one row per mutation — two when a shift edit touches two weeks,
-plus a row per imported shift — and nothing deletes any of it. Note it grows strictly **faster**
-than `MutationOutcome`, which only gets a row when a client bothers to send a key. This work
-pruned the slower-growing table and left the faster one, which is defensible on risk but worth
-saying plainly.
+### What was fixed
 
-It cannot simply be given the same treatment. `GET /api/events/since` serves polling clients
-`WHERE id > lastId`, so a client whose cursor has been pruned away asks for events after an id
-that no longer exists and concludes it is **caught up**, silently missing every change in
-between.
+Clients poll `WHERE id > lastId`, so a client whose cursor was deleted would ask for events
+that no longer exist, receive an empty page, and conclude it was **caught up** — silently
+missing every change since. That is now detectable:
 
-Two cases, and only one is genuinely bad. If *some* newer rows survive, the client gets a
-partial page with `truncated: false`, applies it, and skips the gap — but `onEvent` triggers a
-full `router.refresh()`, which refetches server state and largely papers over the miss. The bad
-case is a topic pruned clean: nothing comes back, the client concludes it is current, and
-nothing ever prompts a refresh. That is a UI confidently showing stale staffing.
+1. **`OutboxWatermark`** holds the highest `EventOutbox.id` ever deleted, advanced in the
+   **same transaction** as the delete, via a single `INSERT … ON CONFLICT DO UPDATE SET
+   GREATEST(...)`. One statement, so the comparison and the write are atomic — a
+   read-modify-write lets two overlapping runs regress the watermark and silently re-expose a
+   gap.
+2. **`GET /api/events/since` returns `cursorLost`** when the cursor is below the watermark, and
+   advances `lastId` to the watermark rather than echoing the cursor back. Echoing it leaves the
+   client below the watermark, so it reports lost again on the next poll — a resync every few
+   seconds, forever, on every quiet topic.
+3. **The client treats `cursorLost` like `truncated`** — adopt the cursor and `onResync()`.
+   Read as optional, so a stale bundle mid-rollout behaves exactly as before.
 
-Anything done here needs a way for a client to detect that its cursor has fallen off the end
-and resync — the `truncated` flag in that response is the seed of one, but it currently only
-signals a capped page, not a lost cursor. Design that first; the deletion is the easy half.
+The watermark is read **after** the rows, so the two-read race fails safe: anything already
+deleted has its advance committed, so the later read must see it. The worst case is a needless
+resync.
+
+### Why the pruning is not enabled
+
+`EventOutbox` is **not** only a replay log. It is the sole store behind:
+
+- **`/my-shifts` drop notices** — which that page's own comment calls *"the one thing a staff
+  member cannot be left to discover only by noticing a shift missing on the day."*
+- **The shift-detail activity timeline.**
+
+Deleting a row there deletes a notice a nurse may never have seen. A shift four weeks out,
+dropped today, would lose its banner while the shift is still ahead of them; somebody who does
+not log in for a week would never learn at all. The retention design was reasoned entirely from
+the polling-client angle, and that missed these consumers completely.
+
+`pruneEventOutbox` works and is tested — including that a failed watermark write rolls the
+delete back. `app/api/cron/prune/route.ts` does not call it, and a test asserts it does not, so
+it cannot be wired in by accident.
+
+### What has to happen first
+
+Drop notices need a durable home of their own — a `DropNotice` row per affected member, with
+its own lifecycle (seen/dismissed, or simply "until the shift has passed"), rather than being
+reconstructed from an event log. Once notices no longer depend on the outbox, pruning it is a
+one-line change behind a signal that already works.
+
+Until then the table grows. That is the lesser problem, and it is the one that is visible.
+
