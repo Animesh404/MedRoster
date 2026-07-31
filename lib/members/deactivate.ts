@@ -176,6 +176,24 @@ export async function reactivateMember(
     }
   }
 
-  await db.user.update({ where: { id: userId }, data: { deactivatedAt: null } })
-  return { ok: true }
+  // Same user lock `deactivateMember` takes, for the same reason. Without it,
+  // this sequence loses a deactivation silently: two managers both click
+  // Reactivate; the first completes; a Deactivate then runs end to end (ban,
+  // claim release, flag); the second — still holding its stale pre-lock read —
+  // unbans and clears the flag. The member is quietly back, ban lifted, while
+  // the manager who deactivated them was told it worked.
+  //
+  // The re-read inside the lock is what actually observes the winner's commit;
+  // the read above it is only an early-exit convenience.
+  return db.$transaction(
+    (tx) =>
+      withOrderedLocks(tx, { userIds: [userId] }, async () => {
+        const current = await tx.user.findUniqueOrThrow({ where: { id: userId } })
+        if (!current.deactivatedAt) return { ok: true as const }
+
+        await tx.user.update({ where: { id: userId }, data: { deactivatedAt: null } })
+        return { ok: true as const }
+      }),
+    TX_OPTIONS,
+  )
 }

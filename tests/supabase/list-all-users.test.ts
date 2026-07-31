@@ -4,10 +4,9 @@ import { listAllAuthUsers, type PagedListUsers } from '@/lib/supabase/list-all-u
 /**
  * A fake `admin.listUsers` holding `total` users, served in pages of `perPage`.
  *
- * Deliberately models the real contract's awkward part: Supabase pages are
- * 1-indexed, and the only reliable end-of-list signal is a page shorter than
- * `perPage` (`nextPage`/`lastPage` are present but have varied across
- * versions, so relying on them is how you get a silent truncation on upgrade).
+ * Supabase pages are 1-indexed. Note this fake honours `perPage` exactly — the
+ * separate capped-page-size test below models a service that does NOT, which
+ * is the case a stop-on-short-page walk gets wrong.
  */
 function fakeListUsers(total: number) {
   const all = Array.from({ length: total }, (_, i) => ({
@@ -38,7 +37,9 @@ describe('listAllAuthUsers', () => {
 
     expect(result.error).toBeNull()
     expect(result.users).toHaveLength(35)
-    expect(calls).toHaveLength(1)
+    // Two requests, not one: the second confirms the directory is exhausted.
+    // Trusting the first short page instead is precisely the bug below.
+    expect(calls).toHaveLength(2)
   })
 
   // The bug this exists for. The old code asked for a single page of 1000 and
@@ -53,17 +54,17 @@ describe('listAllAuthUsers', () => {
     expect(new Set(result.users.map((u) => u.id)).size).toBe(2500)
   })
 
-  it('asks for pages 1..n in order, and stops on the first short page', async () => {
+  it('asks for pages 1..n in order, and stops on the first empty page', async () => {
     const { listUsers, calls } = fakeListUsers(2500)
 
     await listAllAuthUsers(listUsers, { perPage: 1000 })
 
-    expect(calls.map((c) => c.page)).toEqual([1, 2, 3])
+    expect(calls.map((c) => c.page)).toEqual([1, 2, 3, 4])
   })
 
-  // An exact multiple has no short page to stop on, so the walk only ends when
-  // a page comes back empty. Off-by-one here would either drop the last page or
-  // loop forever.
+  // Terminating on an EMPTY page means the walk always spends one request
+  // learning it is done, whether or not the total divides evenly. That is the
+  // deliberate cost of not trusting a short page to mean "last".
   it('terminates when the total is an exact multiple of the page size', async () => {
     const { listUsers, calls } = fakeListUsers(2000)
 
@@ -71,6 +72,27 @@ describe('listAllAuthUsers', () => {
 
     expect(result.users).toHaveLength(2000)
     expect(calls.map((c) => c.page)).toEqual([1, 2, 3])
+  })
+
+  // The trap an earlier version of this helper fell into. If the service caps
+  // `per_page` server-side below what we asked for, EVERY page is "short" — so
+  // a stop-on-short-page walk halts on page 1 and silently returns a fraction
+  // of the directory, with no error. Waiting for a genuinely empty page is
+  // immune to that, and this test is what pins it.
+  it('does not stop early when the service caps the page size below what was asked', async () => {
+    const all = Array.from({ length: 250 }, (_, i) => ({ id: `uid-${i + 1}` }))
+    const SERVER_CAP = 50
+
+    const listUsers: PagedListUsers = (params) => {
+      const perPage = Math.min(params?.perPage ?? 50, SERVER_CAP) // the cap
+      const start = ((params?.page ?? 1) - 1) * perPage
+      return Promise.resolve({ data: { users: all.slice(start, start + perPage) }, error: null })
+    }
+
+    const result = await listAllAuthUsers(listUsers, { perPage: 1000 })
+
+    expect(result.error).toBeNull()
+    expect(result.users).toHaveLength(250)
   })
 
   it('handles an empty directory', async () => {

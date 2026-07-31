@@ -187,3 +187,17 @@ The alternative — refusing to deactivate until a manager reassigns every held
 shift — was rejected. It makes offboarding a multi-step chore at exactly the
 moment someone has already walked out, and it leaves the roster claiming cover
 that will not arrive.
+
+## Reactivating a member restores their access, not their shifts
+
+`reactivateMember` clears `deactivatedAt` and lifts the Supabase ban. It deliberately does
+**not** restore the future claims that deactivation released.
+
+Those shifts went back on the board when the member was deactivated, and a colleague may have
+picked them up in the days since. Handing them back on return would silently oversell the
+shift and countermand a claim somebody else is planning their week around. A returning member
+comes back able to claim; they do not come back to the rota they left.
+
+This mirrors the deactivation policy above — future claims are released because a member who
+has left should stop appearing as cover — and keeps the pair symmetric in intent even though
+it is asymmetric in effect.

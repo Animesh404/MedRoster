@@ -11,7 +11,7 @@ export type PagedListUsers = (
 ) => Promise<{ data: { users: PagedAuthUser[] }; error: unknown }>
 
 export interface ListAllOptions {
-  /** Users per request. Supabase caps this well below 1000 in practice. */
+  /** Users per request. */
   perPage?: number
   /** Runaway guard — see the throw below. */
   maxPages?: number
@@ -29,10 +29,21 @@ const DEFAULT_MAX_PAGES = 50
  * a dropped user rendered as "No account" — a confident wrong answer rather
  * than an error, which is the worst failure shape available.
  *
- * **Termination is on a short page, not on `nextPage`/`lastPage`.** Those
- * fields exist but have moved around between Supabase releases, and trusting
- * one that quietly disappears reintroduces exactly the silent truncation this
- * function exists to remove. A short page is a property of the data.
+ * **Termination is on an EMPTY page** — not on `nextPage`/`lastPage`, and not
+ * on a short one.
+ *
+ * Not `nextPage`/`lastPage`: those fields exist but have moved between Supabase
+ * releases, and trusting one that quietly disappears reintroduces exactly the
+ * silent truncation this function exists to remove.
+ *
+ * Not a *short* page either, which is the subtler trap and the one an earlier
+ * version of this file fell into. "Short" only means "last" if the service
+ * always honours the `perPage` you asked for. If it ever caps `per_page`
+ * server-side below the requested value, page 1 comes back short, the walk
+ * stops on page 1, and the caller silently gets a fraction of the directory —
+ * the original bug, restored, with the error path never firing. Whether such a
+ * cap exists is not something this code should have to know: waiting for a
+ * genuinely empty page is correct either way, and costs one extra request.
  *
  * **A partial result is never returned.** If any page errors, the caller gets
  * the error and an empty list, so it renders a failure rather than a plausible
@@ -52,12 +63,9 @@ export async function listAllAuthUsers(
     if (error) return { users: [], error }
 
     const batch = data?.users ?? []
-    users.push(...batch)
+    if (batch.length === 0) return { users, error: null }
 
-    // Short page ⇒ that was the last one. An exact multiple of `perPage` has
-    // no short page, so it costs one extra empty request to learn it is done —
-    // cheap, and the alternative is an off-by-one that drops the final page.
-    if (batch.length < perPage) return { users, error: null }
+    users.push(...batch)
   }
 
   // Reached only if every page came back full. Either the directory is larger
