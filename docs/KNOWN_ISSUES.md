@@ -80,10 +80,11 @@ client that retries after a genuine timeout mid-transaction could still double-s
 The unique constraint on `(shiftId, userId)` catches that today; a mutation-id-keyed
 dedup would be the fuller answer.
 
-## No reactivation for a deactivated member
+## ~~No reactivation for a deactivated member~~ — FIXED
 
-**Status:** open, by design for now. Surfaced by the final review of the account-lifecycle
-work (2026-07-31).
+**Status:** fixed 2026-07-31. Kept for the reasoning; the original text follows, then the fix.
+
+Surfaced by the final review of the account-lifecycle work.
 
 `deactivateMember` sets `User.deactivatedAt`, bans the Supabase user, and releases future
 claims. Nothing reverses it. A deactivated row renders with no action buttons, and
@@ -103,9 +104,73 @@ Deliberately out of scope for that plan, but two consequences are worth knowing:
 A reactivation feature should clear `deactivatedAt`, unban the Supabase user, and leave
 released claims released (they belong to whoever took them since).
 
-## Members list is unpaginated past 1000 accounts
+### Fix
 
-`app/api/members/route.ts` calls `listUsers({ perPage: 1000 })` and joins in memory. Past
-1000 Supabase auth users, real members silently render as "No account" — a wrong answer, not
-an error. Fine at ~35 staff; a landmine at scale. Note the `adminPort()` factory is
-duplicated across two route files, so a paging fix has to be made in both.
+`reactivateMember` (`lib/members/deactivate.ts`) does exactly that, exposed as
+`POST /api/members/{id}/reactivate` under `member:manage` and as a **Reactivate** button on
+deactivated rows.
+
+It is **deliberately asymmetric** with deactivation: the released claims are not restored.
+Someone else may have picked those shifts up in the intervening days, and handing them back
+would silently oversell the shift and countermand a colleague's claim. The member returns to
+the roster able to claim again; they do not return to the rota they left. Nothing about
+staffing changes, so no outbox events are emitted.
+
+The unban runs before the profile write, so a failure leaves the member deactivated in both
+stores — visibly incomplete and safe to retry — rather than reporting them active while they
+still cannot sign in.
+
+Both consequences listed above are also fixed:
+
+- **`revokeInvite` now refuses an accepted member.** It checks `confirmed_at` before deleting
+  the auth user, so `DELETE /api/members/{id}/invite` can no longer destroy an active
+  account's access from a button labelled "revoke invite". The UI already gated on status;
+  the API is the real boundary and now holds on its own.
+- **Re-inviting clears `deactivatedAt`.** Previously the invite sent, the invitee set a
+  password, and `/auth/confirm` then refused them — a manager saw a successful invite while
+  the person could not get in. Note the scope: `inviteMember` rejects anyone who still has an
+  `authUserId`, so this path is only reachable for a deactivated member with **no** account
+  (deactivated before accepting, or after a revoke). A deactivated member who still has an
+  account is handled by Reactivate, which is the right route for them.
+
+## ~~Members list is unpaginated past 1000 accounts~~ — FIXED
+
+**Status:** fixed 2026-07-31.
+
+`listUsers({ perPage: 1000 })` treated a single page as the whole directory. Past one page the
+remainder was dropped, and because the caller joins that list against the roster to derive
+account status, a dropped user rendered as **"No account"** — a confident wrong answer rather
+than an error, which is the worst failure shape available.
+
+### Fix
+
+`listAllAuthUsers` (`lib/supabase/list-all-users.ts`) pages until exhausted, and is used by
+all **three** call sites — the members route, the invite route, and `prisma/seed.ts`. The
+original note said two; the seed was missed, and it has the same bug in a worse place: it
+looks the demo accounts up by scanning the directory, so on a large stack it would fail to
+find an existing account and try to create a duplicate.
+
+Two deliberate choices:
+
+- **Termination is on an EMPTY page** — not on `nextPage`/`lastPage`, and not on a short one.
+  Those fields have moved between Supabase releases, so trusting one that quietly disappears
+  would reintroduce the silent truncation. A *short* page is the subtler trap, and the first
+  version of this fix fell into it: "short" only means "last" if the service always honours
+  the `perPage` you asked for. If it ever caps `per_page` server-side, page 1 comes back
+  short, the walk stops on page 1, and the caller silently gets a fraction of the directory —
+  the original bug restored, with the error path never firing. Waiting for a genuinely empty
+  page is correct either way and costs one extra request.
+- **A partial result is never returned.** If any page errors, the caller gets the error and an
+  empty list, so it renders a failure rather than a plausible roster with people missing.
+
+A `maxPages` guard turns a misbehaving service into a loud error rather than a hung request.
+
+**Still true:** the `adminPort()` factory is duplicated across two route files. Both now call
+the shared helper, so the paging logic itself lives in one place, but the adapter boilerplate
+is written twice.
+
+**Also worth knowing:** `revokeInvite` deliberately does NOT use this helper. It answers a
+single-key question ("has this one user accepted?") and now uses `getUserById` — one request,
+an exact answer, and no dependence on a listing being complete. Answering it by walking the
+directory would have made a truncated read look like "user absent", and the guard fails open
+on absence.

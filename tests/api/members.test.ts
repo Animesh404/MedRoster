@@ -39,6 +39,7 @@ const adminCalls = vi.hoisted(() => ({ invited: [] as string[], deleted: [] as s
 const adminBehavior = vi.hoisted(() => ({
   nextInviteError: null as null | { code: string },
   nextListUsersError: null as null | { message: string },
+  confirmedAuthIds: new Set<string>(),
 }))
 vi.mock('@/lib/supabase/admin', () => ({
   createSupabaseAdminClient: () => ({
@@ -48,6 +49,7 @@ vi.mock('@/lib/supabase/admin', () => ({
           if (adminBehavior.nextInviteError) {
             const error = adminBehavior.nextInviteError
             adminBehavior.nextInviteError = null
+  adminBehavior.confirmedAuthIds.clear()
             return Promise.resolve({ data: { user: null }, error })
           }
           adminCalls.invited.push(email)
@@ -57,6 +59,18 @@ vi.mock('@/lib/supabase/admin', () => ({
           if ('ban_duration' in attrs) adminCalls.banned.push(id)
           return Promise.resolve({ data: { user: { id } }, error: null })
         },
+        // Answers the single-key lookup revokeInvite uses to tell a pending
+        // invite from an accepted account. `confirmedAuthIds` lets a test say
+        // "this one has already accepted" without reaching into the mock.
+        getUserById: (id: string) =>
+          Promise.resolve({
+            data: {
+              user: adminBehavior.confirmedAuthIds.has(id)
+                ? { id, confirmed_at: '2026-07-01T00:00:00Z' }
+                : { id },
+            },
+            error: null,
+          }),
         listUsers: () => {
           if (adminBehavior.nextListUsersError) {
             const error = adminBehavior.nextListUsersError
@@ -77,6 +91,7 @@ vi.mock('@/lib/supabase/admin', () => ({
 const { GET, POST } = await import('@/app/api/members/route')
 const { DELETE: DEACTIVATE } = await import('@/app/api/members/[id]/route')
 const { POST: RESEND, DELETE: REVOKE } = await import('@/app/api/members/[id]/invite/route')
+const { POST: REACTIVATE } = await import('@/app/api/members/[id]/reactivate/route')
 
 // Set in beforeEach to the real id of a persisted manager row, never
 // hardcoded — `resetTestDb()` truncates with `RESTART IDENTITY`, so the first
@@ -327,5 +342,82 @@ describe('DELETE /api/members/[id]', () => {
     })
     expect(res.status).toBe(403)
     expect(adminCalls.banned).toHaveLength(0)
+  })
+})
+
+
+describe('POST /api/members/[id]/reactivate', () => {
+  const ctx = (id: string) => ({ params: Promise.resolve({ id }) })
+  const req = () => new Request('http://localhost', { method: 'POST' })
+
+  it('refuses a staff member with 403', async () => {
+    const db = await getTestDb()
+    const target = await db.user.create({
+      data: {
+        email: 'gone@c.test', name: 'Gone', role: 'STAFF', profession: 'NURSE',
+        authUserId: 'uid-gone', deactivatedAt: new Date('2026-01-01'),
+      },
+    })
+    session.user = { id: 2, role: 'STAFF', profession: 'NURSE', name: 'Nina', email: 'nina@c.test' }
+
+    const res = await REACTIVATE(req(), ctx(String(target.id)))
+
+    expect(res.status).toBe(403)
+    expect((await db.user.findUniqueOrThrow({ where: { id: target.id } })).deactivatedAt).toBeInstanceOf(Date)
+  })
+
+  it('refuses an unauthenticated request with 401', async () => {
+    session.user = null
+    const res = await REACTIVATE(req(), ctx('1'))
+    expect(res.status).toBe(401)
+  })
+
+  it('returns 400 for a non-numeric id rather than crashing', async () => {
+    const res = await REACTIVATE(req(), ctx('abc'))
+    expect(res.status).toBe(400)
+  })
+
+  it('reactivates for a manager, clearing the flag and lifting the ban', async () => {
+    const db = await getTestDb()
+    const target = await db.user.create({
+      data: {
+        email: 'back@c.test', name: 'Back Again', role: 'STAFF', profession: 'NURSE',
+        authUserId: 'uid-back', deactivatedAt: new Date('2026-01-01'),
+      },
+    })
+
+    const res = await REACTIVATE(req(), ctx(String(target.id)))
+
+    expect(res.status).toBe(200)
+    expect((await db.user.findUniqueOrThrow({ where: { id: target.id } })).deactivatedAt).toBeNull()
+    expect(adminCalls.banned).toEqual(['uid-back'])
+  })
+
+  it('404s for somebody who is not on the roster', async () => {
+    const res = await REACTIVATE(req(), ctx('999999'))
+    expect(res.status).toBe(404)
+  })
+})
+
+describe('DELETE /api/members/[id]/invite — the accepted-member guard', () => {
+  // Route-level cover for the guard, not just the service: previously this
+  // route deleted an accepted member's auth account outright.
+  it('refuses to revoke somebody who has already accepted, and deletes nothing', async () => {
+    const db = await getTestDb()
+    const target = await db.user.create({
+      data: {
+        email: 'accepted@c.test', name: 'Accepted', role: 'STAFF',
+        profession: 'NURSE', authUserId: 'uid-accepted',
+      },
+    })
+    adminBehavior.confirmedAuthIds.add('uid-accepted')
+
+    const res = await REVOKE(new Request('http://localhost', { method: 'DELETE' }), {
+      params: Promise.resolve({ id: String(target.id) }),
+    })
+
+    expect(res.status).toBe(409)
+    expect(adminCalls.deleted).toEqual([])
+    expect((await db.user.findUniqueOrThrow({ where: { id: target.id } })).authUserId).toBe('uid-accepted')
   })
 })

@@ -135,3 +135,65 @@ export async function deactivateMember(
     TX_OPTIONS,
   )
 }
+
+/**
+ * Brings a deactivated member back: clears the profile flag and lifts the
+ * Supabase ban.
+ *
+ * **Deliberately asymmetric with `deactivateMember`.** That function released
+ * the member's future claims; this one does NOT restore them. Someone else may
+ * have picked those shifts up in the intervening days, and handing them back
+ * would silently oversell the shift and countermand a colleague's claim. The
+ * member returns to the roster able to claim again — they do not return to the
+ * rota they left. Nothing about staffing changes, so no outbox events are
+ * emitted either.
+ *
+ * The unban runs BEFORE the profile write, for the same reason the ban runs
+ * before the transaction in `deactivateMember`: it is a network call to another
+ * service and cannot join the transaction. Ordering it first means a failure
+ * leaves the member deactivated in both stores — visibly incomplete and safe to
+ * retry. The reverse would report a member as active while they still cannot
+ * sign in, which is the two stores disagreeing silently.
+ */
+export async function reactivateMember(
+  db: PrismaClient,
+  admin: BanAdminPort,
+  userId: number,
+): Promise<{ ok: true } | AppError> {
+  const profile = await db.user.findUnique({ where: { id: userId } })
+  if (!profile) return createAppError('NOT_FOUND', 'That person is not on the roster.')
+
+  // Already active: nothing to undo, and no reason to spend an admin call.
+  if (!profile.deactivatedAt) return { ok: true }
+
+  if (profile.authUserId) {
+    // Supabase's documented way to lift a ban. `deactivateMember` bans for
+    // 100 years rather than forever, precisely so this is a plain unban and
+    // not a special case.
+    const { error } = await admin.updateUserById(profile.authUserId, { ban_duration: 'none' })
+    if (error) {
+      return createAppError('INVALID_INPUT', 'Could not restore that account’s access.')
+    }
+  }
+
+  // Same user lock `deactivateMember` takes, for the same reason. Without it,
+  // this sequence loses a deactivation silently: two managers both click
+  // Reactivate; the first completes; a Deactivate then runs end to end (ban,
+  // claim release, flag); the second — still holding its stale pre-lock read —
+  // unbans and clears the flag. The member is quietly back, ban lifted, while
+  // the manager who deactivated them was told it worked.
+  //
+  // The re-read inside the lock is what actually observes the winner's commit;
+  // the read above it is only an early-exit convenience.
+  return db.$transaction(
+    (tx) =>
+      withOrderedLocks(tx, { userIds: [userId] }, async () => {
+        const current = await tx.user.findUniqueOrThrow({ where: { id: userId } })
+        if (!current.deactivatedAt) return { ok: true as const }
+
+        await tx.user.update({ where: { id: userId }, data: { deactivatedAt: null } })
+        return { ok: true as const }
+      }),
+    TX_OPTIONS,
+  )
+}

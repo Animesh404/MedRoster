@@ -24,6 +24,14 @@ export interface InviteAdminPort {
    * a pending one (see `lib/members/status.ts`).
    */
   listUsers(): Promise<{ data: { users: { id: string; email?: string; confirmed_at?: string }[] }; error: unknown }>
+  /**
+   * A single-key lookup, used by `revokeInvite` to tell a pending invite from
+   * an accepted account. Deliberately NOT `listUsers` + find: that answers a
+   * one-user question by walking the whole directory, and — worse — cannot
+   * distinguish "this user is absent" from "the listing was truncated", so a
+   * short read would make a confirmed member look revocable.
+   */
+  getUserById(id: string): Promise<{ data: { user: { id: string; confirmed_at?: string } | null }; error: unknown }>
   deleteUser(id: string): Promise<{ error: unknown }>
 }
 
@@ -71,7 +79,21 @@ export async function inviteMember(
     const profile = existing
       ? await db.user.update({
           where: { id: existing.id },
-          data: { authUserId, role: input.role, profession: input.profession },
+          data: {
+            authUserId,
+            role: input.role,
+            profession: input.profession,
+            // Clearing this is what makes re-inviting a departed member work.
+            // Left set, the invite sends and Supabase accepts it, the invitee
+            // sets a password — and then `/auth/confirm`'s roster gate refuses
+            // them with "This account is no longer active", because
+            // `checkRosterByEmail` still sees `deactivatedAt`. The manager sees
+            // a successful invite; the person simply cannot get in.
+            //
+            // Deliberately NOT restoring their released claims: those shifts
+            // belong to whoever picked them up in the meantime.
+            deactivatedAt: null,
+          },
         })
       : await db.user.create({
           data: { email, name: input.name, role: input.role, profession: input.profession, authUserId },
@@ -124,6 +146,24 @@ export async function revokeInvite(
   if (!profile?.authUserId) {
     return createAppError('NOT_FOUND', 'That person has no pending invite.')
   }
+
+  // PENDING invites only. Without this check, `DELETE /api/members/{id}/invite`
+  // on somebody who has already accepted deletes their Supabase auth user
+  // outright — losing their password and their ability to sign in, from a
+  // button that says "revoke invite". The UI only offers it for
+  // `status === 'invited'`, but the API is the boundary, and it has to hold on
+  // its own: a manager with curl, a stale page, or a future caller all bypass
+  // that UI check.
+  const { data: looked, error: lookupError } = await admin.getUserById(profile.authUserId)
+  if (lookupError) {
+    return createAppError('BUSY', 'Could not reach the accounts service. Please try again.')
+  }
+  if (looked.user?.confirmed_at) {
+    return createAppError('ALREADY_CLAIMED', 'That person has already accepted their invite.')
+  }
+  // `looked.user === null` means the account is already gone from Supabase
+  // (deleted out-of-band). Falling through is right: there is nothing left to
+  // protect, and the profile still needs its stale `authUserId` cleared below.
 
   const { error } = await admin.deleteUser(profile.authUserId)
   if (error) return createAppError('INVALID_INPUT', 'Could not revoke that invite.')

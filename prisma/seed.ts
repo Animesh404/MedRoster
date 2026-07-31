@@ -11,6 +11,7 @@ import { prisma } from '@/lib/db/client'
 import { runSeed } from '@/lib/seed/run-seed'
 import { getClientEnv, getServerEnv } from '@/lib/config/env'
 import { ensureAuthAccounts, type AuthAdminPort } from '@/lib/seed/auth-accounts'
+import { listAllAuthUsers } from '@/lib/supabase/list-all-users'
 
 const SEED_PASSWORD = process.env.SEED_PASSWORD ?? 'medroster123'
 
@@ -48,9 +49,13 @@ async function main(): Promise<void> {
   // three calls out keeps the port honest without an `as unknown as` cast that
   // would silently survive a breaking change in supabase-js.
   const adminPort: AuthAdminPort = {
+    // Paged. The seed only needs the four demo accounts, but it looks them up
+    // by scanning the directory — so on a stack with more than one page of
+    // users it would fail to find an existing account and try to create a
+    // duplicate, which then fails with `email_exists`.
     listUsers: async () => {
-      const { data, error } = await supabaseAdmin.listUsers({ perPage: 1000 })
-      return { data: { users: data?.users ?? [] }, error }
+      const { users, error } = await listAllAuthUsers((params) => supabaseAdmin.listUsers(params))
+      return { data: { users }, error }
     },
     createUser: async (attrs) => {
       const { data, error } = await supabaseAdmin.createUser(attrs)
