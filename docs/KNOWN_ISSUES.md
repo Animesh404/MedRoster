@@ -261,16 +261,12 @@ resync.
 
 ### Why the pruning is not enabled
 
-`EventOutbox` is **not** only a replay log. It is the sole store behind:
+`EventOutbox` was **not** only a replay log. It was the sole store behind two consumers, and
+the retention design — reasoned entirely from the polling-client angle — missed both:
 
-- **`/my-shifts` drop notices** — which that page's own comment calls *"the one thing a staff
-  member cannot be left to discover only by noticing a shift missing on the day."*
-- **The shift-detail activity timeline.**
-
-Deleting a row there deletes a notice a nurse may never have seen. A shift four weeks out,
-dropped today, would lose its banner while the shift is still ahead of them; somebody who does
-not log in for a week would never learn at all. The retention design was reasoned entirely from
-the polling-client angle, and that missed these consumers completely.
+- **`/my-shifts` drop notices** — since fixed; see the section below. Deleting a row used to
+  delete a notice a nurse may never have seen.
+- **The shift-detail activity timeline** — still outstanding.
 
 `pruneEventOutbox` works and is tested — including that a failed watermark write rolls the
 delete back. `app/api/cron/prune/route.ts` does not call it, and a test asserts it does not, so
@@ -284,15 +280,31 @@ helper, so a fourth drop path cannot quietly forget. The shift's times are **sna
 the row, which also retires the old trick of recovering a deleted shift's times by digging
 through its `shift.created`/`shift.edited` history.
 
-Lifecycle: **dismissible, and auto-expiring once the shift has started.** Dismissal is the
-acknowledgement — without it somebody dropped from a shift four weeks out stares at the same
-banner for four weeks. Auto-expiry means an unread notice cannot accumulate forever. A notice
-whose `shiftStartsAt` is NULL keeps showing, because hiding it would be the silent loss this
-table exists to prevent.
+Lifecycle: **dismissible, and auto-expiring `NOTICE_GRACE_MS` (48h) after the LATER of the
+shift's start and the notice's own creation.** Dismissal is the acknowledgement — without it
+somebody dropped from a shift four weeks out stares at the same banner for four weeks.
+
+Expiry is deliberately not *"once the shift has started"*, which was the first rule written and
+was wrong in a way worth recording: it conflated **acting** with **knowing**. Deleting a shift
+that started yesterday wrote a notice that was already past its own expiry, so it was filtered
+out the instant it was created and the member never saw it at all. Deleting one starting in ten
+minutes gave them ten minutes. The premise of the whole feature is that nobody discovers this
+by turning up, so the notice has to outlive the shift it is about. The `createdAt` floor is
+also what bounds a notice whose `shiftStartsAt` could never be recovered — it stays visible for
+a full grace period rather than forever.
 
 Existing notices were **backfilled** from `EventOutbox` in the migration — 10 real ones on the
 dev database. Without that, anyone dropped shortly before the deploy would have lost their
-notice at deploy time, which is precisely the harm being fixed.
+notice at deploy time, which is precisely the harm being fixed. The backfill is bounded to the
+same 48-hour window (backfilling all history would greet everyone with months of drops they
+long since dealt with), dedupes the duplicate a cross-week retime emits on two topics, and
+falls back to event history for the times of a shift that was dropped and later deleted. It is
+covered by `tests/rules/drop-notice-backfill.test.ts`, which reads the migration file itself —
+SQL that runs once against production and cannot be undone gets tested like code.
+
+**Retention:** `pruneDropNotices` runs in the nightly cron, deleting rows only once both clocks
+`activeDropNotices` consults have run out. Safe in a way outbox pruning is not — it removes
+rows nobody can see, rather than rows somebody might still need.
 
 ### What still blocks pruning
 

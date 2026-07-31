@@ -12,7 +12,6 @@ import { PROFESSION_LABELS } from '@/lib/domain/profession'
 import { internalFetch } from '@/lib/server/internal-fetch'
 import { prisma } from '@/lib/db/client'
 import { activeDropNotices } from '@/lib/rules/drop-notice'
-import type { OutboxEvent } from '@/lib/contracts/events'
 
 const CLINIC_TZ = process.env.CLINIC_TZ ?? 'Europe/London'
 const dateFmt = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: CLINIC_TZ })
@@ -82,13 +81,11 @@ export default async function MyShiftsPage() {
   const weeks = windowWeeks(now)
   const currentWeek = isoWeekOf(now)
 
-  const [weekResponses, eventResponses] = await Promise.all([
-    Promise.all(weeks.map((w) => internalFetch(`/api/weeks/${w}`))),
-    Promise.all(weeks.map((w) => internalFetch(`/api/events/since?topic=${encodeURIComponent(`week:${w}`)}&id=0&limit=500`))),
-  ])
-
+  // Only the week payloads. This used to also fetch `/api/events/since` for
+  // all seven weeks, purely to reconstruct drop notices at render time; the
+  // `DropNotice` table replaced that, and the fetches outlived their reader.
+  const weekResponses = await Promise.all(weeks.map((w) => internalFetch(`/api/weeks/${w}`)))
   const decodedWeeks = await Promise.all(weekResponses.map(async (r) => (r.ok ? decodeWeek(await r.json() as CompressedWeek) : null)))
-  const eventLists = await Promise.all(eventResponses.map(async (r) => (r.ok ? (await r.json() as { events: OutboxEvent[] }).events : [])))
 
   const myShifts: (WeekShift & { isoWeek: string })[] = []
   const hoursPerWeek: WeekHours[] = []
@@ -110,20 +107,6 @@ export default async function MyShiftsPage() {
   const upcoming = myShifts.filter((s) => new Date(s.startsAt) > now)
   const nextShift = upcoming[0] ?? null
 
-  // A dropped shift's own date/time (MINOR-8) — a staff member can't tell
-  // WHICH shift they lost from the drop event's payload alone (dropped/
-  // deleted events carry the shift's id and who/why, never its schedule).
-  // Live shifts (still in `decodedWeeks`) are authoritative; a genuinely
-  // deleted shift is gone from there but never from its own event history
-  // (`EventOutbox` has no FK to `Shift`), so `shift.created`/`shift.edited`
-  // for that same id is the best-effort fallback — `shift.edited` wins when
-  // both exist since it carries the shift's last known time, not its
-  // original one.
-  const shiftTimesById = new Map<number, { startsAt: string; endsAt: string | null }>()
-  for (const week of decodedWeeks) {
-    if (!week) continue
-    for (const s of week.shifts) shiftTimesById.set(s.id, { startsAt: s.startsAt, endsAt: s.endsAt })
-  }
   // Drop notices — the shift no longer showing up in `myShifts` at all is
   // exactly what makes this the one thing a staff member cannot be left to
   // discover only by noticing a shift missing on the day (§my-shifts brief).
