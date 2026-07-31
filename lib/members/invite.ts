@@ -71,7 +71,21 @@ export async function inviteMember(
     const profile = existing
       ? await db.user.update({
           where: { id: existing.id },
-          data: { authUserId, role: input.role, profession: input.profession },
+          data: {
+            authUserId,
+            role: input.role,
+            profession: input.profession,
+            // Clearing this is what makes re-inviting a departed member work.
+            // Left set, the invite sends and Supabase accepts it, the invitee
+            // sets a password — and then `/auth/confirm`'s roster gate refuses
+            // them with "This account is no longer active", because
+            // `checkRosterByEmail` still sees `deactivatedAt`. The manager sees
+            // a successful invite; the person simply cannot get in.
+            //
+            // Deliberately NOT restoring their released claims: those shifts
+            // belong to whoever picked them up in the meantime.
+            deactivatedAt: null,
+          },
         })
       : await db.user.create({
           data: { email, name: input.name, role: input.role, profession: input.profession, authUserId },
@@ -123,6 +137,22 @@ export async function revokeInvite(
   const profile = await db.user.findUnique({ where: { id: userId } })
   if (!profile?.authUserId) {
     return createAppError('NOT_FOUND', 'That person has no pending invite.')
+  }
+
+  // PENDING invites only. Without this check, `DELETE /api/members/{id}/invite`
+  // on somebody who has already accepted deletes their Supabase auth user
+  // outright — losing their password and their ability to sign in, from a
+  // button that says "revoke invite". The UI only offers it for
+  // `status === 'invited'`, but the API is the boundary, and it has to hold on
+  // its own: a manager with curl, a stale page, or a future caller all bypass
+  // that UI check.
+  const { data: listed, error: listError } = await admin.listUsers()
+  if (listError) {
+    return createAppError('BUSY', 'Could not reach the accounts service. Please try again.')
+  }
+  const authUser = listed.users.find((u) => u.id === profile.authUserId)
+  if (authUser?.confirmed_at) {
+    return createAppError('ALREADY_CLAIMED', 'That person has already accepted their invite.')
   }
 
   const { error } = await admin.deleteUser(profile.authUserId)
