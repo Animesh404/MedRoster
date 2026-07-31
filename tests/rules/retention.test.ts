@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
-import { pruneMutationOutcomes, MUTATION_RETENTION_MS } from '@/lib/rules/retention'
+import { pruneMutationOutcomes, MUTATION_RETENTION_MS, pruneDropNotices, DROP_NOTICE_RETENTION_MS } from '@/lib/rules/retention'
 import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
 
 beforeEach(resetTestDb)
@@ -132,5 +132,76 @@ describe('pruneMutationOutcomes', () => {
   // echo-suppression TTL is 60s. Hours of headroom, not minutes.
   it('uses a retention window generously longer than any client retry', () => {
     expect(MUTATION_RETENTION_MS).toBeGreaterThanOrEqual(6 * HOUR)
+  })
+})
+
+/**
+ * DropNotice grows on every drop path and nothing else removes rows, so
+ * without this it grows forever.
+ */
+describe('pruneDropNotices', () => {
+  const NOW = new Date('2026-08-01T12:00:00Z')
+  const expired = new Date(NOW.getTime() - DROP_NOTICE_RETENTION_MS - 60_000)
+  const fresh = new Date(NOW.getTime() - 60_000)
+
+  async function nurse(email = 'n@c.test') {
+    const db = await getTestDb()
+    return db.user.create({ data: { email, name: 'N', role: 'STAFF', profession: 'NURSE' } })
+  }
+  async function notice(userId: number, createdAt: Date, shiftStartsAt: Date | null) {
+    const db = await getTestDb()
+    return db.dropNotice.create({
+      data: { userId, shiftId: 1, kind: 'dropped', reason: 'r', createdAt, shiftStartsAt },
+    })
+  }
+
+  it('deletes a notice whose shift and creation are both long past', async () => {
+    const db = await getTestDb()
+    const n = await nurse()
+    await notice(n.id, expired, expired)
+
+    expect(await pruneDropNotices(db, { now: NOW })).toMatchObject({ deleted: 1, exhausted: false })
+    expect(await db.dropNotice.count()).toBe(0)
+  })
+
+  // Both clocks matter. Keying on createdAt alone would delete a still-visible
+  // notice about a shift that has not happened yet.
+  it('keeps an old notice about a shift still ahead', async () => {
+    const db = await getTestDb()
+    const n = await nurse()
+    await notice(n.id, expired, new Date('2027-01-01T09:00:00Z'))
+
+    expect(await pruneDropNotices(db, { now: NOW })).toMatchObject({ deleted: 0 })
+    expect(await db.dropNotice.count()).toBe(1)
+  })
+
+  // And keying on shiftStartsAt alone would delete a notice written moments ago
+  // about a shift that already started — the born-invisible case, deleted.
+  it('keeps a fresh notice about a shift that already started', async () => {
+    const db = await getTestDb()
+    const n = await nurse()
+    await notice(n.id, fresh, expired)
+
+    expect(await pruneDropNotices(db, { now: NOW })).toMatchObject({ deleted: 0 })
+    expect(await db.dropNotice.count()).toBe(1)
+  })
+
+  it('deletes an old notice whose shift time was never recovered', async () => {
+    const db = await getTestDb()
+    const n = await nurse()
+    await notice(n.id, expired, null)
+
+    expect(await pruneDropNotices(db, { now: NOW })).toMatchObject({ deleted: 1 })
+  })
+
+  it('reports exhausted when it stops at the batch ceiling with work left', async () => {
+    const db = await getTestDb()
+    const n = await nurse()
+    for (let i = 0; i < 3; i++) await notice(n.id, expired, expired)
+
+    const result = await pruneDropNotices(db, { now: NOW, batchSize: 1, maxBatches: 2 })
+
+    expect(result).toMatchObject({ deleted: 2, exhausted: true })
+    expect(await db.dropNotice.count()).toBe(1)
   })
 })

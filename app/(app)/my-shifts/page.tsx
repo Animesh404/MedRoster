@@ -10,7 +10,8 @@ import { decodeWeek, type CompressedWeek, type WeekShift } from '@/lib/contracts
 import { durationMinutes, isoWeekOf, weekBounds } from '@/lib/domain/time'
 import { PROFESSION_LABELS } from '@/lib/domain/profession'
 import { internalFetch } from '@/lib/server/internal-fetch'
-import type { OutboxEvent } from '@/lib/contracts/events'
+import { prisma } from '@/lib/db/client'
+import { activeDropNotices } from '@/lib/rules/drop-notice'
 
 const CLINIC_TZ = process.env.CLINIC_TZ ?? 'Europe/London'
 const dateFmt = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: CLINIC_TZ })
@@ -80,13 +81,11 @@ export default async function MyShiftsPage() {
   const weeks = windowWeeks(now)
   const currentWeek = isoWeekOf(now)
 
-  const [weekResponses, eventResponses] = await Promise.all([
-    Promise.all(weeks.map((w) => internalFetch(`/api/weeks/${w}`))),
-    Promise.all(weeks.map((w) => internalFetch(`/api/events/since?topic=${encodeURIComponent(`week:${w}`)}&id=0&limit=500`))),
-  ])
-
+  // Only the week payloads. This used to also fetch `/api/events/since` for
+  // all seven weeks, purely to reconstruct drop notices at render time; the
+  // `DropNotice` table replaced that, and the fetches outlived their reader.
+  const weekResponses = await Promise.all(weeks.map((w) => internalFetch(`/api/weeks/${w}`)))
   const decodedWeeks = await Promise.all(weekResponses.map(async (r) => (r.ok ? decodeWeek(await r.json() as CompressedWeek) : null)))
-  const eventLists = await Promise.all(eventResponses.map(async (r) => (r.ok ? (await r.json() as { events: OutboxEvent[] }).events : [])))
 
   const myShifts: (WeekShift & { isoWeek: string })[] = []
   const hoursPerWeek: WeekHours[] = []
@@ -108,72 +107,25 @@ export default async function MyShiftsPage() {
   const upcoming = myShifts.filter((s) => new Date(s.startsAt) > now)
   const nextShift = upcoming[0] ?? null
 
-  // A dropped shift's own date/time (MINOR-8) — a staff member can't tell
-  // WHICH shift they lost from the drop event's payload alone (dropped/
-  // deleted events carry the shift's id and who/why, never its schedule).
-  // Live shifts (still in `decodedWeeks`) are authoritative; a genuinely
-  // deleted shift is gone from there but never from its own event history
-  // (`EventOutbox` has no FK to `Shift`), so `shift.created`/`shift.edited`
-  // for that same id is the best-effort fallback — `shift.edited` wins when
-  // both exist since it carries the shift's last known time, not its
-  // original one.
-  const shiftTimesById = new Map<number, { startsAt: string; endsAt: string | null }>()
-  for (const week of decodedWeeks) {
-    if (!week) continue
-    for (const s of week.shifts) shiftTimesById.set(s.id, { startsAt: s.startsAt, endsAt: s.endsAt })
-  }
-  const fallbackShiftTimesById = new Map<number, { startsAt: string; endsAt: string | null }>()
-  for (const events of eventLists) {
-    for (const event of events) {
-      const payload = event.payload as Record<string, unknown>
-      const shiftId = Number(payload.shiftId)
-      if (event.type === 'shift.edited') {
-        fallbackShiftTimesById.set(shiftId, { startsAt: String(payload.startsAt), endsAt: String(payload.endsAt) })
-      } else if (event.type === 'shift.created' && !fallbackShiftTimesById.has(shiftId)) {
-        fallbackShiftTimesById.set(shiftId, { startsAt: String(payload.startsAt), endsAt: null })
-      }
-    }
-  }
-  function shiftTimeFor(shiftId: number): { shiftStartsAt: string | null; shiftEndsAt: string | null } {
-    const time = shiftTimesById.get(shiftId) ?? fallbackShiftTimesById.get(shiftId)
-    return { shiftStartsAt: time?.startsAt ?? null, shiftEndsAt: time?.endsAt ?? null }
-  }
-
   // Drop notices — the shift no longer showing up in `myShifts` at all is
   // exactly what makes this the one thing a staff member cannot be left to
   // discover only by noticing a shift missing on the day (§my-shifts brief).
-  const notices: DropNotice[] = []
-  weeks.forEach((_isoWeek, i) => {
-    const events = eventLists[i] ?? []
-    for (const event of events) {
-      const payload = event.payload as Record<string, unknown>
-
-      if (event.type === 'shift.claims_dropped') {
-        const dropped = payload.dropped as { userId: number; reason: string }[]
-        const mine = dropped.find((d) => d.userId === userId)
-        if (mine) {
-          const shiftId = Number(payload.shiftId)
-          notices.push({
-            shiftId, reason: mine.reason, at: event.createdAt ?? null, kind: 'dropped',
-            ...shiftTimeFor(shiftId),
-          })
-        }
-      } else if (event.type === 'shift.deleted') {
-        const affected = payload.affectedUserIds as number[]
-        if (affected.includes(userId)) {
-          const shiftId = Number(payload.shiftId)
-          notices.push({
-            shiftId,
-            reason: 'A manager deleted this shift.',
-            at: event.createdAt ?? null,
-            kind: 'deleted',
-            ...shiftTimeFor(shiftId),
-          })
-        }
-      }
-    }
-  })
-  notices.sort((a, b) => new Date(b.at ?? 0).getTime() - new Date(a.at ?? 0).getTime())
+  // Read from `DropNotice`, not reconstructed from `EventOutbox`.
+  //
+  // Rebuilding these at render time is what made the outbox impossible to
+  // prune: deleting an event deleted a notice a nurse might never have seen.
+  // The row carries the shift's times as a snapshot, so a DELETED shift no
+  // longer needs its times recovered by digging through event history either.
+  const stored = await activeDropNotices(prisma, userId)
+  const notices: DropNotice[] = stored.map((n) => ({
+    id: n.id,
+    shiftId: n.shiftId,
+    reason: n.reason,
+    at: n.createdAt.toISOString(),
+    kind: n.kind === 'deleted' ? 'deleted' : 'dropped',
+    shiftStartsAt: n.shiftStartsAt?.toISOString() ?? null,
+    shiftEndsAt: n.shiftEndsAt?.toISOString() ?? null,
+  }))
 
   const totalHoursWindow = Math.round(hoursPerWeek.reduce((sum, w) => sum + w.hours, 0) * 10) / 10
   const thisWeekHours = hoursPerWeek.find((w) => w.isCurrent)?.hours ?? 0

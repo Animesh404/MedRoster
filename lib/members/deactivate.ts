@@ -4,6 +4,7 @@ import { emitEvent } from '@/lib/events/outbox'
 import { weekTopic } from '@/lib/events/topics'
 import { TX_OPTIONS } from '@/lib/rules/assign'
 import { withOrderedLocks } from '@/lib/rules/locks'
+import { recordDropNotices } from '@/lib/rules/drop-notice'
 
 /** The slice of `supabase.auth.admin` needed to revoke a session. */
 export interface BanAdminPort {
@@ -96,7 +97,7 @@ export async function deactivateMember(
 
         const doomed = await tx.claim.findMany({
           where: { userId, shift: { startsAt: { gt: now } } },
-          select: { shiftId: true, shift: { select: { startsAt: true } } },
+          select: { shiftId: true, shift: { select: { startsAt: true, endsAt: true } } },
         })
 
         await tx.user.update({ where: { id: userId }, data: { deactivatedAt: now } })
@@ -117,6 +118,18 @@ export async function deactivateMember(
             code: 'NOT_CLAIMED' as const,
             reason: 'They were removed from the roster.',
           }]
+
+          // The offboarded member cannot sign in to read this — it is recorded
+          // so the roster's history is complete, and so every drop path writes
+          // a notice rather than two of three doing it.
+          await recordDropNotices(tx, doomed.map((claim) => ({
+            userId: current.id,
+            shiftId: claim.shiftId,
+            kind: 'dropped' as const,
+            reason: 'They were removed from the roster.',
+            shiftStartsAt: claim.shift.startsAt,
+            shiftEndsAt: claim.shift.endsAt,
+          })))
 
           for (const claim of doomed) {
             await emitEvent(tx, {
