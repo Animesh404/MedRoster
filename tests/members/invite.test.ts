@@ -47,7 +47,20 @@ function fakeAdmin(seed: { id: string; email: string; confirmed?: boolean }[] = 
       calls.updated.push({ id, attrs })
       return Promise.resolve({ data: { user: { id } }, error: null })
     },
-    listUsers: () => Promise.resolve({ data: { users: users.map((u) => ({ id: u.id, email: u.email })) }, error: null }),
+    // `confirmed_at` is the field the app uses to tell an accepted account from
+    // a pending invite (see lib/members/status.ts), so the fake must carry it
+    // or a caller that checks it can't be tested at all.
+    listUsers: () =>
+      Promise.resolve({
+        data: {
+          users: users.map((u) => ({
+            id: u.id,
+            email: u.email,
+            ...(u.confirmed ? { confirmed_at: '2026-07-01T00:00:00Z' } : {}),
+          })),
+        },
+        error: null,
+      }),
     deleteUser: (id) => {
       calls.deleted.push(id)
       const i = users.findIndex((u) => u.id === id)
@@ -206,5 +219,58 @@ describe('revokeInvite', () => {
     // The person stays on the roster and can be re-invited; only the pending
     // account is withdrawn.
     expect(profile.authUserId).toBeNull()
+  })
+
+  // The UI only offers Revoke on a row whose status is 'invited', but the API
+  // is the real boundary and it did not check. Revoking an ACCEPTED member
+  // deleted their Supabase auth user outright — they lose their password, their
+  // session, and their ability to sign in, from a button labelled "revoke
+  // invite". A manager-only footgun, but a destructive one.
+  it('refuses to revoke somebody who has already accepted', async () => {
+    const db = await getTestDb()
+    const { port, calls, confirm } = fakeAdmin()
+    const { userId } = (await inviteMember(db, port, NURSE)) as { userId: number }
+    confirm('uid-1')
+
+    const result = await revokeInvite(db, port, userId)
+
+    expect(result).toMatchObject({ code: 'ALREADY_CLAIMED' })
+    expect(calls.deleted).toEqual([])
+    const profile = await db.user.findUniqueOrThrow({ where: { id: userId } })
+    expect(profile.authUserId).toBe('uid-1')
+  })
+
+  it('still refuses a member with no account at all', async () => {
+    const db = await getTestDb()
+    const profile = await db.user.create({
+      data: { email: 'nobody@c.test', name: 'Nobody', role: 'STAFF', profession: 'NURSE' },
+    })
+    const { port } = fakeAdmin()
+
+    expect(await revokeInvite(db, port, profile.id)).toMatchObject({ code: 'NOT_FOUND' })
+  })
+})
+
+describe('inviting a deactivated member', () => {
+  // Without this, the invite sends, Supabase accepts it, the invitee sets a
+  // password — and then /auth/confirm refuses them with "This account is no
+  // longer active", because checkRosterByEmail still sees deactivatedAt. The
+  // manager sees a successful invite and the person cannot get in.
+  it('clears deactivatedAt so the invitee can actually sign in', async () => {
+    const db = await getTestDb()
+    const gone = await db.user.create({
+      data: {
+        email: NURSE.email, name: 'Previously Left', role: 'STAFF', profession: 'NURSE',
+        authUserId: null, deactivatedAt: new Date('2026-01-01'),
+      },
+    })
+    const { port } = fakeAdmin()
+
+    const result = await inviteMember(db, port, NURSE)
+
+    expect(result).toMatchObject({ userId: gone.id })
+    const profile = await db.user.findUniqueOrThrow({ where: { id: gone.id } })
+    expect(profile.deactivatedAt).toBeNull()
+    expect(profile.authUserId).toBe('uid-1')
   })
 })

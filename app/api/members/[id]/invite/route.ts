@@ -4,6 +4,7 @@ import { withAuth, errorResponse, type AuthedContext } from '@/lib/auth/with-aut
 import { createAppError } from '@/lib/domain/errors'
 import { getServerEnv } from '@/lib/config/env'
 import { createSupabaseAdminClient } from '@/lib/supabase/admin'
+import { listAllAuthUsers } from '@/lib/supabase/list-all-users'
 import { resendInvite, revokeInvite, type InviteAdminPort } from '@/lib/members/invite'
 
 function adminPort(): InviteAdminPort {
@@ -17,9 +18,12 @@ function adminPort(): InviteAdminPort {
       const { data, error } = await admin.updateUserById(id, attrs)
       return { data: { user: data?.user ?? null }, error }
     },
+    // Paged, not a single page of 1000: past one page the remainder was
+    // silently dropped, and a dropped user renders as "No account" — a
+    // confident wrong answer rather than an error. See lib/supabase/list-all-users.ts.
     listUsers: async () => {
-      const { data, error } = await admin.listUsers({ perPage: 1000 })
-      return { data: { users: data?.users ?? [] }, error }
+      const { users, error } = await listAllAuthUsers((params) => admin.listUsers(params))
+      return { data: { users }, error }
     },
     deleteUser: async (id) => {
       const { error } = await admin.deleteUser(id)
