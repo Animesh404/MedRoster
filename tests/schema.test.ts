@@ -249,6 +249,19 @@ describe('applied migration SQL (folded to net state)', () => {
     expect(state.indexes.has('User_authUserId_key'), 'authUserId must be unique').toBe(true)
   })
 
+  it('stores a per-mutation idempotency record, keyed by the client id', () => {
+    expect(state.tables.has('MutationOutcome')).toBe(true)
+    const cols = state.columns.get('MutationOutcome')
+    expect(cols?.has('mutationId')).toBe(true)
+    expect(cols?.has('scope')).toBe(true)
+    expect(cols?.has('result')).toBe(true)
+    // Primary key, not merely an index: two concurrent retries of one key must
+    // collide at the database rather than both being recorded. Prisma emits
+    // this INLINE in the CREATE TABLE rather than as a separate ALTER TABLE,
+    // so it lives in the table body, not the folded constraint map.
+    expect(requireTable(state, 'MutationOutcome')).toMatch(/PRIMARY KEY \("mutationId"\)/)
+  })
+
   it('records when a member was deactivated', () => {
     expect(state.columns.get('User')?.has('deactivatedAt')).toBe(true)
   })
