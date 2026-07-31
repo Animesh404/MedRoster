@@ -10,6 +10,8 @@ import { decodeWeek, type CompressedWeek, type WeekShift } from '@/lib/contracts
 import { durationMinutes, isoWeekOf, weekBounds } from '@/lib/domain/time'
 import { PROFESSION_LABELS } from '@/lib/domain/profession'
 import { internalFetch } from '@/lib/server/internal-fetch'
+import { prisma } from '@/lib/db/client'
+import { activeDropNotices } from '@/lib/rules/drop-notice'
 import type { OutboxEvent } from '@/lib/contracts/events'
 
 const CLINIC_TZ = process.env.CLINIC_TZ ?? 'Europe/London'
@@ -122,58 +124,25 @@ export default async function MyShiftsPage() {
     if (!week) continue
     for (const s of week.shifts) shiftTimesById.set(s.id, { startsAt: s.startsAt, endsAt: s.endsAt })
   }
-  const fallbackShiftTimesById = new Map<number, { startsAt: string; endsAt: string | null }>()
-  for (const events of eventLists) {
-    for (const event of events) {
-      const payload = event.payload as Record<string, unknown>
-      const shiftId = Number(payload.shiftId)
-      if (event.type === 'shift.edited') {
-        fallbackShiftTimesById.set(shiftId, { startsAt: String(payload.startsAt), endsAt: String(payload.endsAt) })
-      } else if (event.type === 'shift.created' && !fallbackShiftTimesById.has(shiftId)) {
-        fallbackShiftTimesById.set(shiftId, { startsAt: String(payload.startsAt), endsAt: null })
-      }
-    }
-  }
-  function shiftTimeFor(shiftId: number): { shiftStartsAt: string | null; shiftEndsAt: string | null } {
-    const time = shiftTimesById.get(shiftId) ?? fallbackShiftTimesById.get(shiftId)
-    return { shiftStartsAt: time?.startsAt ?? null, shiftEndsAt: time?.endsAt ?? null }
-  }
-
   // Drop notices — the shift no longer showing up in `myShifts` at all is
   // exactly what makes this the one thing a staff member cannot be left to
   // discover only by noticing a shift missing on the day (§my-shifts brief).
-  const notices: DropNotice[] = []
-  weeks.forEach((_isoWeek, i) => {
-    const events = eventLists[i] ?? []
-    for (const event of events) {
-      const payload = event.payload as Record<string, unknown>
-
-      if (event.type === 'shift.claims_dropped') {
-        const dropped = payload.dropped as { userId: number; reason: string }[]
-        const mine = dropped.find((d) => d.userId === userId)
-        if (mine) {
-          const shiftId = Number(payload.shiftId)
-          notices.push({
-            shiftId, reason: mine.reason, at: event.createdAt ?? null, kind: 'dropped',
-            ...shiftTimeFor(shiftId),
-          })
-        }
-      } else if (event.type === 'shift.deleted') {
-        const affected = payload.affectedUserIds as number[]
-        if (affected.includes(userId)) {
-          const shiftId = Number(payload.shiftId)
-          notices.push({
-            shiftId,
-            reason: 'A manager deleted this shift.',
-            at: event.createdAt ?? null,
-            kind: 'deleted',
-            ...shiftTimeFor(shiftId),
-          })
-        }
-      }
-    }
-  })
-  notices.sort((a, b) => new Date(b.at ?? 0).getTime() - new Date(a.at ?? 0).getTime())
+  // Read from `DropNotice`, not reconstructed from `EventOutbox`.
+  //
+  // Rebuilding these at render time is what made the outbox impossible to
+  // prune: deleting an event deleted a notice a nurse might never have seen.
+  // The row carries the shift's times as a snapshot, so a DELETED shift no
+  // longer needs its times recovered by digging through event history either.
+  const stored = await activeDropNotices(prisma, userId)
+  const notices: DropNotice[] = stored.map((n) => ({
+    id: n.id,
+    shiftId: n.shiftId,
+    reason: n.reason,
+    at: n.createdAt.toISOString(),
+    kind: n.kind === 'deleted' ? 'deleted' : 'dropped',
+    shiftStartsAt: n.shiftStartsAt?.toISOString() ?? null,
+    shiftEndsAt: n.shiftEndsAt?.toISOString() ?? null,
+  }))
 
   const totalHoursWindow = Math.round(hoursPerWeek.reduce((sum, w) => sum + w.hours, 0) * 10) / 10
   const thisWeekHours = hoursPerWeek.find((w) => w.isCurrent)?.hours ?? 0
