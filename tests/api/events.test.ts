@@ -233,3 +233,65 @@ describe('GET /api/events/since — lost cursors', () => {
     expect(body.truncated).toBe(false)
   })
 })
+
+/**
+ * Pruning and polling, together.
+ *
+ * Each half is tested alone elsewhere — the cron deletes rows and advances the
+ * watermark; the route reports a cursor below the watermark as lost. Neither
+ * proves the pair works, and the pair is the entire safety argument for
+ * deleting outbox rows at all: a client pointing below the deleted rows must be
+ * TOLD, rather than handed an empty page it would read as "nothing happened".
+ */
+describe('pruning the outbox, then polling it', () => {
+  it('tells a client whose cursor was pruned that it was, and where to resume', async () => {
+    await asManager()
+    const db = await getTestDb()
+    const { OUTBOX_RETENTION_MS, pruneEventOutbox } = await import('@/lib/rules/retention')
+
+    const stale = await db.eventOutbox.create({
+      data: {
+        topic: 'week:2026-W31', type: 'shift.claims_dropped', payload: { shiftId: 1 },
+        createdAt: new Date(Date.now() - OUTBOX_RETENTION_MS - 86_400_000),
+      },
+    })
+    const cursorBelow = stale.id - BigInt(1)
+
+    expect(await pruneEventOutbox(db)).toMatchObject({ deleted: 1 })
+
+    const res = await eventsSinceGet(
+      new Request(`http://localhost/api/events/since?topic=week:2026-W31&id=${cursorBelow}`),
+      noParams,
+    )
+
+    const body = await res.json() as { events: unknown[]; cursorLost: boolean; lastId: string }
+    // The empty page alone is exactly what a caught-up client sees too — the
+    // flag is the only thing that distinguishes the two.
+    expect(body.events).toEqual([])
+    expect(body.cursorLost).toBe(true)
+    expect(body.lastId).toBe(String(stale.id))
+  })
+
+  // The other side of the same coin: a client that was never behind the pruned
+  // range must NOT be told to resync, or every quiet topic resyncs forever.
+  it('does not disturb a client whose cursor is above the pruned range', async () => {
+    await asManager()
+    const db = await getTestDb()
+    const { OUTBOX_RETENTION_MS, pruneEventOutbox } = await import('@/lib/rules/retention')
+
+    const stale = await db.eventOutbox.create({
+      data: {
+        topic: 'week:2026-W31', type: 'shift.claims_dropped', payload: { shiftId: 1 },
+        createdAt: new Date(Date.now() - OUTBOX_RETENTION_MS - 86_400_000),
+      },
+    })
+    await pruneEventOutbox(db)
+
+    const res = await eventsSinceGet(
+      new Request(`http://localhost/api/events/since?topic=week:2026-W31&id=${stale.id}`),
+      noParams,
+    )
+
+    expect((await res.json()).cursorLost).toBe(false)
+  })
+})

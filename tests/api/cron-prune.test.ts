@@ -99,7 +99,7 @@ describe('cron/prune', () => {
     const res = await route.GET(req(`Bearer ${SECRET}`))
 
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ deleted: 2, exhausted: false, mutationOutcomes: 2, dropNotices: 0 })
+    expect(await res.json()).toEqual({ deleted: 2, exhausted: false, mutationOutcomes: 2, dropNotices: 0, outboxEvents: 0 })
     const left = await db.mutationOutcome.findMany({ select: { mutationId: true } })
     expect(left.map((r) => r.mutationId)).toEqual(['fresh'])
   })
@@ -123,29 +123,64 @@ describe('cron/prune', () => {
   })
 })
 
-describe('cron/prune — leaves EventOutbox alone', () => {
-  // Deliberate, not an oversight. EventOutbox is the sole store behind
-  // /my-shifts' drop notices and the shift activity timeline, so deleting a
-  // row there can delete a notice a nurse has not seen. `pruneEventOutbox`
-  // exists and works; it is not wired in until those notices have a durable
-  // home. This test is what stops it being wired in by accident.
-  it('does not delete outbox events, however old', async () => {
+/**
+ * Outbox pruning, wired in at a 10-day window.
+ *
+ * The tests that matter here are not "does it delete" — it is the watermark
+ * that makes deleting safe. A run that deletes rows without advancing
+ * `prunedUpTo` is the silent-data-loss case this whole mechanism exists to
+ * prevent: a client polling `id > lastId` for rows that are gone receives an
+ * empty page and concludes it is up to date.
+ */
+describe('cron/prune — EventOutbox', () => {
+  async function seedEvent(ageMs: number) {
     const db = await getTestDb()
-    const { OUTBOX_RETENTION_MS } = await import('@/lib/rules/retention')
-
-    await db.eventOutbox.create({
+    return db.eventOutbox.create({
       data: {
         topic: 'week:2026-W31', type: 'shift.claims_dropped', payload: { shiftId: 1 },
-        createdAt: new Date(Date.now() - OUTBOX_RETENTION_MS - 30 * 24 * 60 * 60 * 1000),
+        createdAt: new Date(Date.now() - ageMs),
       },
     })
+  }
+
+  it('deletes events past the retention window and keeps the rest', async () => {
+    const db = await getTestDb()
+    const { OUTBOX_RETENTION_MS } = await import('@/lib/rules/retention')
+    const old = await seedEvent(OUTBOX_RETENTION_MS + 86_400_000)
+    const recent = await seedEvent(60_000)
 
     const res = await route.GET(req(`Bearer ${SECRET}`))
 
     expect(res.status).toBe(200)
-    expect(await db.eventOutbox.count()).toBe(1)
-    expect((await res.json()).outboxEvents).toBeUndefined()
+    expect(await res.json()).toMatchObject({ outboxEvents: 1 })
+    const left = await db.eventOutbox.findMany({ select: { id: true } })
+    expect(left.map((r) => r.id)).toEqual([recent.id])
+    expect(left.map((r) => r.id)).not.toContain(old.id)
   })
+
+  // The safety property. Deleting without this is the silent loss.
+  it('advances the watermark to the highest id it deleted', async () => {
+    const db = await getTestDb()
+    const { OUTBOX_RETENTION_MS, prunedWatermark } = await import('@/lib/rules/retention')
+    await seedEvent(OUTBOX_RETENTION_MS + 86_400_000)
+    const newest = await seedEvent(OUTBOX_RETENTION_MS + 3_600_000)
+
+    await route.GET(req(`Bearer ${SECRET}`))
+
+    expect(await prunedWatermark(db)).toBe(newest.id)
+  })
+
+  it('leaves the watermark alone when there is nothing to prune', async () => {
+    const db = await getTestDb()
+    const { prunedWatermark } = await import('@/lib/rules/retention')
+    await seedEvent(60_000)
+
+    await route.GET(req(`Bearer ${SECRET}`))
+
+    expect(await prunedWatermark(db)).toBe(BigInt(0))
+    expect(await db.eventOutbox.count()).toBe(1)
+  })
+
 })
 
 /**
