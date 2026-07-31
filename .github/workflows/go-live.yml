@@ -40,6 +40,13 @@ env:
   APP_ENV: development
   CLINIC_TZ: Europe/London
   SEED_PASSWORD: medroster123
+  # Workflow-level, not job-level, because `npm ci` now runs `prisma generate`
+  # via postinstall and `prisma.config.ts` validates the database env before it
+  # will load. The acceptance job installs BEFORE `supabase start`, so without
+  # this its very first step fails on a URL nothing has connected to yet.
+  # `generate` reads the schema and never opens a connection; the acceptance job
+  # later sets DATABASE_URL, which overrides APP_ENV entirely.
+  DATABASE_URL_DEV: postgresql://postgres:postgres@localhost:5432/medroster
   # Local to the runner and thrown away with it. Real secrets live in the
   # repository's GitHub Actions secrets and Vercel's own environment.
   CRON_SECRET: gate-only-not-a-real-secret
@@ -49,8 +56,6 @@ jobs:
     name: 1 · verify
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    env:
-      DATABASE_URL_DEV: postgresql://postgres:postgres@localhost:5432/medroster
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
