@@ -369,9 +369,23 @@ function Footer() {
           Sign in
         </Link>
       </div>
+      {/*
+        * Decorative wordmark, sized to FIT rather than to a breakpoint.
+        *
+        * It was `text-[18vw] sm:text-[12rem]`, and both halves clipped. These
+        * nine glyphs need roughly 6.2x the font size in width, so 18vw
+        * overflowed a phone by ~45px, and the fixed 12rem — which takes effect
+        * from 640px up — overflowed a 768px tablet by 418px. `overflow-hidden`
+        * on the footer meant none of that showed as page-level scroll; it just
+        * quietly shaved both ends off a centred word.
+        *
+        * 15vw stays under the viewport at every width, and the 14rem cap stops
+        * it running to 384px on an ultrawide. Verified by measuring computed
+        * font size and scrollWidth from 320px to 2560px, not by eye.
+        */}
       <p
         aria-hidden
-        className="pointer-events-none -mb-8 text-center font-display text-[18vw] leading-none font-bold text-foreground/5 select-none sm:text-[12rem]"
+        className="pointer-events-none -mb-8 text-center font-display text-[min(15vw,14rem)] leading-none font-bold text-foreground/5 select-none"
       >
         MEDROSTER
       </p>
