@@ -46,3 +46,46 @@ test.describe('responsive dashboard', () => {
     assertClean(capture)
   })
 })
+
+/**
+ * The footer wordmark, at every width somebody might actually use.
+ *
+ * It was `text-[18vw] sm:text-[12rem]` and clipped at both ends: ~45px over on
+ * a phone, and 418px over on a 768px tablet, where the fixed 12rem takes effect
+ * regardless of how narrow the screen is. `overflow-hidden` on the footer meant
+ * this never registered as page-level overflow — the existing responsive test
+ * passed throughout — it just quietly shaved the ends off a centred word.
+ *
+ * Two assertions, because the obvious one alone is satisfiable by a bug: a
+ * wordmark that collapsed to the 16px body default would also measure as "not
+ * clipped", while looking nothing like the design. A dropped or mistyped
+ * Tailwind class does exactly that, silently, in a passing build.
+ */
+test.describe('footer wordmark', () => {
+  for (const width of [320, 390, 414, 768, 1024, 1440]) {
+    test(`is neither clipped nor collapsed at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 })
+      await page.goto('/')
+
+      const metrics = await page.evaluate(() => {
+        const el = [...document.querySelectorAll('footer p')]
+          .find((p) => p.textContent?.trim() === 'MEDROSTER')
+        if (!el) throw new Error('footer wordmark not found')
+        return {
+          fontSize: parseFloat(getComputedStyle(el).fontSize),
+          scrollWidth: el.scrollWidth,
+          clientWidth: el.clientWidth,
+        }
+      })
+
+      // Not clipped.
+      expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth)
+      // And still a display wordmark, not the 16px body default a dropped
+      // Tailwind class silently leaves behind. An absolute floor rather than a
+      // fraction of the viewport: the size is capped at 14rem, so a
+      // proportional check would fail on a wide screen for a correct value.
+      expect(metrics.fontSize).toBeGreaterThan(40)
+    })
+  }
+})
+
