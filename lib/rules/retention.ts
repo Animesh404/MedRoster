@@ -179,21 +179,32 @@ export async function pruneDropNotices(
 }
 
 /**
- * How long `EventOutbox` rows are kept.
+ * How long `EventOutbox` rows are kept. **Ten days**, chosen deliberately.
  *
- * These exist purely so a client that was away can replay what it missed. A
- * client polls every few seconds and catches up whenever its tab becomes
- * visible, so the practical requirement is minutes — but a laptop closed over a
- * weekend should still replay rather than resync, and a resync is only a
- * `router.refresh()`, so erring long costs little either way.
+ * Two consumers, with very different needs, and the longer one sets the number:
+ *
+ *  - **Replay for clients that were away.** A client polls every few seconds
+ *    and catches up whenever its tab becomes visible, so the requirement here
+ *    is minutes. A laptop closed over a weekend should still replay rather
+ *    than resync, but a resync is only a `router.refresh()` — this consumer
+ *    would be happy with a day.
+ *  - **The shift-detail activity timeline**, which renders straight from these
+ *    rows. This is the one that wants a long window: pruning does not degrade
+ *    the timeline, it truncates it, and releases/drops/retimes older than the
+ *    window simply stop being visible while current claims keep showing
+ *    correctly. Ten days covers "what happened to this shift recently" across
+ *    a full rota cycle plus slack.
  *
  * Unlike `MutationOutcome`, expiry here is SAFE to get wrong in the short
- * direction — but only because `prunedUpTo` tells a stranded client to resync.
+ * direction — but ONLY because `prunedUpTo` tells a stranded client to resync.
  * Without that signal any expiry at all silently loses events. Do not shorten
  * this, or prune at all, without that watermark being written in the same
  * transaction as the delete.
+ *
+ * This is a product decision about how much history the roster keeps, not a
+ * tuning constant. Changing it shortens what the activity timeline can show.
  */
-export const OUTBOX_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+export const OUTBOX_RETENTION_MS = 10 * 24 * 60 * 60 * 1000
 
 /** The singleton watermark row's id. */
 const WATERMARK_ID = 1

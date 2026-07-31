@@ -232,10 +232,10 @@ and the pruner takes no advisory lock. It does share the connection pool that tu
 bursts into capacity errors, so "cannot contend" would be overstating it.
 
 
-## EventOutbox — the lost-cursor signal is fixed; the pruning is deliberately NOT enabled
+## EventOutbox — retention, and why it took three steps to enable
 
-**Status:** partly fixed 2026-07-31. The signal that makes pruning *possible* is live. The
-deletion is written, tested, and **not wired in**, for a reason found in review.
+**Status:** FIXED 2026-07-31. Pruning runs nightly at a **10-day** window. Getting here needed
+three separate things to be true, and each was found only after the previous one was fixed.
 
 ### What was fixed
 
@@ -259,18 +259,19 @@ The watermark is read **after** the rows, so the two-read race fails safe: anyth
 deleted has its advance committed, so the later read must see it. The worst case is a needless
 resync.
 
-### Why the pruning is not enabled
+### Why it stayed unwired for so long
 
-`EventOutbox` was **not** only a replay log. It was the sole store behind two consumers, and
-the retention design — reasoned entirely from the polling-client angle — missed both:
+`EventOutbox` was **not** only a replay log. It was the sole store behind two consumers, and the
+original retention design — reasoned entirely from the polling-client angle — missed both:
 
-- **`/my-shifts` drop notices** — since fixed; see the section below. Deleting a row used to
-  delete a notice a nurse may never have seen.
-- **The shift-detail activity timeline** — still outstanding.
+- **`/my-shifts` drop notices** — which that page's own comment called *"the one thing a staff
+  member cannot be left to discover only by noticing a shift missing on the day."* Deleting a
+  row deleted a notice a nurse may never have seen. A shift four weeks out, dropped today, would
+  have lost its banner while the shift was still ahead of them.
+- **The shift-detail activity timeline.**
 
-`pruneEventOutbox` works and is tested — including that a failed watermark write rolls the
-delete back. `app/api/cron/prune/route.ts` does not call it, and a test asserts it does not, so
-it cannot be wired in by accident.
+The first was severe enough to block pruning entirely; see the section below for how it was
+fixed. The second is a real cost, not a bug, and is what the window size is chosen against.
 
 ### Progress: drop notices are now durable (2026-07-31)
 
@@ -306,18 +307,21 @@ SQL that runs once against production and cannot be undone gets tested like code
 `activeDropNotices` consults have run out. Safe in a way outbox pruning is not — it removes
 rows nobody can see, rather than rows somebody might still need.
 
-### What still blocks pruning
+### The window: 10 days, chosen not tuned
 
-One consumer left: the **shift-detail activity timeline** (`app/(app)/shifts/[id]/page.tsx`).
-It builds from two sources — the live claim list, which is durable, and the week's event
-history, which is not. Pruning would silently thin the historical half: releases, drops and
-retimes older than the window would disappear while current claims stayed.
+`pruneEventOutbox` is wired into the nightly cron as of 2026-07-31, at `OUTBOX_RETENTION_MS =
+10 days`.
 
-This is materially less severe than the drop-notice case. A missing notice means somebody does
-not know they are not working; a thinner timeline means less context on a page that already
-shows current state correctly. It may well be an acceptable trade — but it is a decision to
-take deliberately, not a side effect of enabling a cron line.
+The remaining consumer is the **shift-detail activity timeline**
+(`app/(app)/shifts/[id]/page.tsx`), which builds from two sources — the live claim list, which
+is durable, and the week's event history, which is not. Pruning thins the historical half:
+releases, drops and retimes older than the window stop appearing while current claims keep
+showing correctly. That is a truncation, not a corruption, and materially less severe than the
+drop-notice case — a missing notice means somebody does not know they are not working; a
+shorter timeline means less context on a page that still shows current state correctly.
 
-`pruneEventOutbox` remains written, tested, and unwired, with a test asserting the cron leaves
-the outbox alone. The table keeps growing until that decision is made.
+Ten days was chosen against that consumer, not against the replay client (which would be happy
+with a day). It covers "what happened to this shift recently" across a full rota cycle plus
+slack. **Changing this number shortens what the activity timeline can show** — it is a product
+decision, not a tuning constant.
 

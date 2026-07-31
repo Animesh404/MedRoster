@@ -1,30 +1,32 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db/client'
 import { withCronAuth } from '@/lib/auth/with-cron-auth'
-import { pruneDropNotices, pruneMutationOutcomes } from '@/lib/rules/retention'
+import { pruneDropNotices, pruneEventOutbox, pruneMutationOutcomes } from '@/lib/rules/retention'
 
 async function prune(): Promise<Response> {
   const outcomes = await pruneMutationOutcomes(prisma)
   const notices = await pruneDropNotices(prisma)
+  const outbox = await pruneEventOutbox(prisma)
 
-  // `pruneEventOutbox` is still deliberately NOT called here, but the reason
-  // has changed and is now narrower.
+  // `pruneEventOutbox` is wired in as of 2026-07-31, at a deliberate 10-day
+  // window. It was held back for a long time, and the two things that had to be
+  // true first are now both true:
   //
-  // It used to be that EventOutbox was the SOLE store behind /my-shifts' drop
-  // notices, so deleting a row deleted a notice a nurse might never have seen.
-  // The `DropNotice` table closed that: every drop path now writes a durable,
-  // per-member row, and the page reads it instead of reconstructing anything
-  // from events.
+  //  1. **A stranded cursor is detectable.** The delete and the `OutboxWatermark`
+  //     advance commit in ONE transaction, so a client polling `id > lastId` for
+  //     rows that are gone is told `cursorLost` and resyncs, rather than getting
+  //     an empty page and concluding it is up to date.
+  //  2. **Drop notices no longer live here.** They have their own durable table,
+  //     written in the same transaction as the drop. Deleting an event used to
+  //     delete a notice a nurse may never have seen — the severe harm, and the
+  //     real reason this stayed unwired.
   //
-  // What remains is the shift-detail activity timeline, which still renders
-  // straight from EventOutbox. Pruning at OUTBOX_RETENTION_MS would silently
-  // truncate that history to seven days. Losing it is a far smaller harm than
-  // losing a drop notice — it is a record, not a notification — but it is a
-  // deliberate product decision rather than a cleanup detail, so it stays
-  // unwired until somebody decides how much timeline to keep.
-  // See docs/KNOWN_ISSUES.md.
-  const deleted = outcomes.deleted + notices.deleted
-  const exhausted = outcomes.exhausted || notices.exhausted
+  // What pruning still costs is the shift-detail activity timeline, which
+  // renders from these rows: history older than the window stops being visible.
+  // That is a truncation, not a corruption — current claims keep showing
+  // correctly — and 10 days is the answer to how much to keep.
+  const deleted = outcomes.deleted + notices.deleted + outbox.deleted
+  const exhausted = outcomes.exhausted || notices.exhausted || outbox.exhausted
 
   // `exhausted` is the only interesting thing this job has to say: it means the
   // run hit its batch ceiling with work still left, i.e. a table is growing
@@ -35,12 +37,13 @@ async function prune(): Promise<Response> {
     console.warn(
       `cron/prune: hit the batch ceiling after ${deleted} rows — backlog remains ` +
       `(mutation outcomes: ${outcomes.deleted}${outcomes.exhausted ? ', capped' : ''}; ` +
-      `drop notices: ${notices.deleted}${notices.exhausted ? ', capped' : ''})`,
+      `drop notices: ${notices.deleted}${notices.exhausted ? ', capped' : ''}; ` +
+      `outbox events: ${outbox.deleted}${outbox.exhausted ? ', capped' : ''})`,
     )
   } else {
     console.info(
-      `cron/prune: deleted ${outcomes.deleted} expired mutation outcomes ` +
-      `and ${notices.deleted} expired drop notices`,
+      `cron/prune: deleted ${outcomes.deleted} expired mutation outcomes, ` +
+      `${notices.deleted} expired drop notices and ${outbox.deleted} expired outbox events`,
     )
   }
 
@@ -48,11 +51,12 @@ async function prune(): Promise<Response> {
     deleted, exhausted,
     mutationOutcomes: outcomes.deleted,
     dropNotices: notices.deleted,
+    outboxEvents: outbox.deleted,
   })
 }
 
 /**
- * Scheduled cleanup of expired idempotency records and drop notices.
+ * Scheduled cleanup of expired idempotency records, drop notices and outbox events.
  *
  * **GET, because that is what Vercel Cron actually sends.** Its schema has no
  * method field: a scheduled invocation is always an HTTP GET to the configured
