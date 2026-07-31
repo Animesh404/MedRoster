@@ -99,7 +99,9 @@ describe('cron/prune', () => {
     const res = await route.GET(req(`Bearer ${SECRET}`))
 
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ deleted: 2, exhausted: false })
+    expect(await res.json()).toEqual({
+      deleted: 2, exhausted: false, mutationOutcomes: 2, outboxEvents: 0,
+    })
     const left = await db.mutationOutcome.findMany({ select: { mutationId: true } })
     expect(left.map((r) => r.mutationId)).toEqual(['fresh'])
   })
@@ -120,5 +122,31 @@ describe('cron/prune', () => {
 
     expect(res.status).toBe(200)
     expect(await db.mutationOutcome.count()).toBe(1)
+  })
+})
+
+describe('cron/prune — outbox events', () => {
+  it('prunes expired outbox events and advances the watermark', async () => {
+    const db = await getTestDb()
+    const { OUTBOX_RETENTION_MS, prunedWatermark } = await import('@/lib/rules/retention')
+
+    const old = await db.eventOutbox.create({
+      data: {
+        topic: 'week:2026-W31', type: 'shift.claimed', payload: { shiftId: 1 },
+        createdAt: new Date(Date.now() - OUTBOX_RETENTION_MS - 60_000),
+      },
+    })
+    await db.eventOutbox.create({
+      data: { topic: 'week:2026-W31', type: 'shift.claimed', payload: { shiftId: 2 } },
+    })
+
+    const res = await route.GET(req(`Bearer ${SECRET}`))
+
+    expect(res.status).toBe(200)
+    expect((await res.json()).outboxEvents).toBe(1)
+    expect(await db.eventOutbox.count()).toBe(1)
+    // The watermark is what stops a stranded client believing it is current.
+    // Deleting without advancing it is the silent-data-loss case.
+    expect(await prunedWatermark(db)).toBe(old.id)
   })
 })

@@ -3,7 +3,9 @@
 // DATABASE_URL_DEV even though it is sitting there on disk.
 import 'dotenv/config'
 import { prisma } from '@/lib/db/client'
-import { MUTATION_RETENTION_MS, pruneMutationOutcomes } from '@/lib/rules/retention'
+import {
+  MUTATION_RETENTION_MS, OUTBOX_RETENTION_MS, pruneEventOutbox, pruneMutationOutcomes,
+} from '@/lib/rules/retention'
 
 /**
  * Manual runner for the retention job — `npm run db:prune`.
@@ -13,10 +15,16 @@ import { MUTATION_RETENTION_MS, pruneMutationOutcomes } from '@/lib/rules/retent
  * deployment that is not on Vercel and needs its own cron to call something.
  */
 async function main(): Promise<void> {
-  const hours = Math.round(MUTATION_RETENTION_MS / 3_600_000)
-  const { deleted, exhausted } = await pruneMutationOutcomes(prisma)
-  console.log(`pruned ${deleted} mutation outcome(s) older than ${hours}h`)
-  if (exhausted) {
+  const outcomeHours = Math.round(MUTATION_RETENTION_MS / 3_600_000)
+  const eventHours = Math.round(OUTBOX_RETENTION_MS / 3_600_000)
+
+  const outcomes = await pruneMutationOutcomes(prisma)
+  console.log(`pruned ${outcomes.deleted} mutation outcome(s) older than ${outcomeHours}h`)
+
+  const events = await pruneEventOutbox(prisma)
+  console.log(`pruned ${events.deleted} outbox event(s) older than ${eventHours}h`)
+
+  if (outcomes.exhausted || events.exhausted) {
     console.warn('hit the batch ceiling — run again, a backlog remains')
   }
 }

@@ -1,10 +1,18 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db/client'
 import { withCronAuth } from '@/lib/auth/with-cron-auth'
-import { pruneMutationOutcomes } from '@/lib/rules/retention'
+import { pruneEventOutbox, pruneMutationOutcomes } from '@/lib/rules/retention'
 
 async function prune(): Promise<Response> {
-  const { deleted, exhausted } = await pruneMutationOutcomes(prisma)
+  const outcomes = await pruneMutationOutcomes(prisma)
+  // Safe ONLY because `pruneEventOutbox` advances `OutboxWatermark` in the same
+  // transaction as the delete, and `GET /api/events/since` reports a cursor
+  // below it as lost. Without that pair, deleting events silently strands any
+  // client that was behind — see docs/KNOWN_ISSUES.md.
+  const events = await pruneEventOutbox(prisma)
+
+  const deleted = outcomes.deleted + events.deleted
+  const exhausted = outcomes.exhausted || events.exhausted
 
   // `exhausted` is the only interesting thing this job has to say: it means the
   // run hit its batch ceiling with work still left, i.e. the table is growing
@@ -12,12 +20,22 @@ async function prune(): Promise<Response> {
   // — "10,000 deleted" reads identically whether that drained the backlog or
   // merely dented it.
   if (exhausted) {
-    console.warn(`cron/prune: hit the batch ceiling after ${deleted} rows — backlog remains`)
+    console.warn(
+      `cron/prune: hit the batch ceiling after ${deleted} rows — backlog remains ` +
+      `(outcomes ${outcomes.deleted}, events ${events.deleted})`,
+    )
   } else {
-    console.info(`cron/prune: deleted ${deleted} expired mutation outcomes`)
+    console.info(
+      `cron/prune: deleted ${outcomes.deleted} mutation outcomes and ${events.deleted} outbox events`,
+    )
   }
 
-  return NextResponse.json({ deleted, exhausted })
+  return NextResponse.json({
+    deleted,
+    exhausted,
+    mutationOutcomes: outcomes.deleted,
+    outboxEvents: events.deleted,
+  })
 }
 
 /**

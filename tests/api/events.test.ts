@@ -170,3 +170,61 @@ describe('GET /api/events/since', () => {
     expect(body.events).toHaveLength(1)
   })
 })
+
+/**
+ * The signal that makes pruning the outbox safe.
+ *
+ * A client polls `WHERE id > lastId`. Once old rows are deleted, a cursor
+ * pointing below them asks for events that no longer exist and gets an empty
+ * page back — which is indistinguishable from "nothing has happened". Without
+ * `cursorLost` the client concludes it is up to date and silently stops
+ * reflecting reality.
+ */
+describe('GET /api/events/since — lost cursors', () => {
+  it('reports a cursor below the pruning watermark as lost', async () => {
+    await asManager()
+    const db = await getTestDb()
+    await db.outboxWatermark.create({ data: { id: 1, prunedUpTo: BigInt(500) } })
+
+    const res = await eventsSinceGet(new Request('http://localhost/api/events/since?topic=week:2026-W31&id=100'), noParams)
+
+    expect(res.status).toBe(200)
+    expect((await res.json()).cursorLost).toBe(true)
+  })
+
+  it('does not report a cursor at or above the watermark as lost', async () => {
+    await asManager()
+    const db = await getTestDb()
+    await db.outboxWatermark.create({ data: { id: 1, prunedUpTo: BigInt(500) } })
+
+    const at = await eventsSinceGet(new Request('http://localhost/api/events/since?topic=week:2026-W31&id=500'), noParams)
+    const above = await eventsSinceGet(new Request('http://localhost/api/events/since?topic=week:2026-W31&id=900'), noParams)
+
+    expect((await at.json()).cursorLost).toBe(false)
+    expect((await above.json()).cursorLost).toBe(false)
+  })
+
+  // Nothing pruned means nothing can have been missed, however old the cursor.
+  it('never reports a lost cursor when nothing has been pruned', async () => {
+    await asManager()
+    const res = await eventsSinceGet(new Request('http://localhost/api/events/since?topic=week:2026-W31&id=0'), noParams)
+    expect((await res.json()).cursorLost).toBe(false)
+  })
+
+  // `truncated` means "too much to send at once" and is recoverable by paging
+  // forward; `cursorLost` means "what you asked for is gone" and is not. They
+  // are different conditions and must not be conflated.
+  it('distinguishes a lost cursor from a merely capped page', async () => {
+    await asManager()
+    const db = await getTestDb()
+    await db.outboxWatermark.create({ data: { id: 1, prunedUpTo: BigInt(500) } })
+
+    const res = await eventsSinceGet(
+      new Request('http://localhost/api/events/since?topic=week:2026-W31&id=100&limit=1'), noParams)
+
+    const body = await res.json()
+    expect(body.cursorLost).toBe(true)
+    // No rows exist in this topic, so the page is not capped.
+    expect(body.truncated).toBe(false)
+  })
+})

@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client'
+import { TX_OPTIONS } from './assign'
 
 /**
  * How long an idempotency record is kept.
@@ -101,6 +102,111 @@ export async function pruneMutationOutcomes(
     // because no concurrent insert can ever produce an EXPIRED row, so "fewer
     // than asked for" genuinely means "no more exist" rather than "none were
     // visible yet".
+    if (expiring.length < batchSize) {
+      exhausted = false
+      break
+    }
+  }
+
+  return { deleted, exhausted }
+}
+
+
+/**
+ * How long `EventOutbox` rows are kept.
+ *
+ * These exist purely so a client that was away can replay what it missed. A
+ * client polls every few seconds and catches up whenever its tab becomes
+ * visible, so the practical requirement is minutes — but a laptop closed over a
+ * weekend should still replay rather than resync, and a resync is only a
+ * `router.refresh()`, so erring long costs little either way.
+ *
+ * Unlike `MutationOutcome`, expiry here is SAFE to get wrong in the short
+ * direction — but only because `prunedUpTo` tells a stranded client to resync.
+ * Without that signal any expiry at all silently loses events. Do not shorten
+ * this, or prune at all, without that watermark being written in the same
+ * transaction as the delete.
+ */
+export const OUTBOX_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+
+/** The singleton watermark row's id. */
+const WATERMARK_ID = 1
+
+/**
+ * Highest `EventOutbox.id` that has been pruned away.
+ *
+ * `0n` when nothing has ever been pruned — which is also the correct answer for
+ * a fresh database, since no client can have missed anything.
+ */
+export async function prunedWatermark(db: PrismaClient): Promise<bigint> {
+  const row = await db.outboxWatermark.findUnique({ where: { id: WATERMARK_ID } })
+  // `BigInt(0)`, not `0n`: tsconfig targets ES2017, which predates BigInt literals.
+  return row?.prunedUpTo ?? BigInt(0)
+}
+
+/**
+ * Deletes expired `EventOutbox` rows and records how far pruning has reached.
+ *
+ * The delete and the watermark advance happen in ONE transaction, and that is
+ * the whole safety argument. Rows disappearing without the watermark moving is
+ * precisely the silent-data-loss case: a client polling `id > lastId` for
+ * deleted events gets an empty page and concludes it is up to date. Committing
+ * them together means a stranded cursor is always detectable.
+ *
+ * Batched like `pruneMutationOutcomes`, for the same reason.
+ */
+export async function pruneEventOutbox(
+  db: PrismaClient,
+  opts: PruneOptions = {},
+): Promise<PruneResult> {
+  const now = opts.now ?? new Date()
+  const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE
+  const maxBatches = opts.maxBatches ?? DEFAULT_MAX_BATCHES
+  const cutoff = new Date(now.getTime() - OUTBOX_RETENTION_MS)
+
+  let deleted = 0
+  let exhausted = true
+
+  for (let batch = 0; batch < maxBatches; batch++) {
+    const expiring = await db.eventOutbox.findMany({
+      where: { createdAt: { lt: cutoff } },
+      // Oldest first, so the highest id in the batch is the furthest point
+      // pruning has reached — which is exactly what the watermark records.
+      orderBy: { id: 'asc' },
+      select: { id: true },
+      take: batchSize,
+    })
+    if (expiring.length === 0) {
+      exhausted = false
+      break
+    }
+
+    const highest = expiring[expiring.length - 1]!.id
+
+    const count = await db.$transaction(async (tx) => {
+      const { count } = await tx.eventOutbox.deleteMany({
+        where: { id: { in: expiring.map((r) => r.id) } },
+      })
+
+      // `upsert` rather than `update`: the singleton may not exist yet on a
+      // database that has never pruned.
+      const current = await tx.outboxWatermark.findUnique({ where: { id: WATERMARK_ID } })
+      if (!current) {
+        await tx.outboxWatermark.create({ data: { id: WATERMARK_ID, prunedUpTo: highest } })
+      } else if (highest > current.prunedUpTo) {
+        // Never backwards. A lower value would re-expose a gap to clients that
+        // had already been told to resync past it.
+        await tx.outboxWatermark.update({
+          where: { id: WATERMARK_ID },
+          data: { prunedUpTo: highest },
+        })
+      }
+
+      return count
+    }, TX_OPTIONS)
+
+    deleted += count
+
     if (expiring.length < batchSize) {
       exhausted = false
       break
