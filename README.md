@@ -216,6 +216,43 @@ Node process in front of a dead database. It is unauthenticated by design — th
 caller is a load balancer — and says only whether the service works and which
 build is answering.
 
+### Supabase: the hosted project needs configuring too
+
+`supabase/config.toml` configures the **local** stack only. Nothing carries it
+to a hosted project, so two settings the app depends on have to be applied to
+production separately — and both fail quietly if they are not:
+
+- **`disable_signup`** — the roster is invite-only. This is layer 1 of three;
+  the others (`shouldCreateUser: false` on magic link, and the roster check in
+  `/auth/callback`) keep a stranger out of roster data, but without this anyone
+  can create an auth account at all.
+- **The three email templates** — ours pass `{{ .TokenHash }}` as a query
+  parameter to `/auth/confirm`. Supabase's defaults use `{{ .ConfirmationURL }}`,
+  which returns the token in the URL **fragment** — never sent to the server, so
+  the route receives nothing and invites and password resets die silently after
+  sending a real email.
+- **Site URL and the redirect allow-list** — every emailed link is built from
+  `{{ .SiteURL }}`. Left at localhost, an invite sends the recipient to a machine
+  they do not have.
+
+```bash
+SUPABASE_ACCESS_TOKEN=sbp_... SUPABASE_PROJECT_REF=... APP_URL=https://... \
+  npm run supabase:config          # apply, then read back to verify
+  npm run supabase:config:check    # report drift, change nothing, exit 1
+```
+
+`SUPABASE_ACCESS_TOKEN` is a **personal access token** from Account → Access
+Tokens. The `service_role` key cannot change project settings.
+
+Still manual, because neither is a setting this app can decide for you:
+
+- **SMTP.** Supabase's built-in sender only delivers to project members and is
+  rate-limited to a handful per hour. Inviting real staff needs your own SMTP.
+- **Google sign-in.** Needs a Google Cloud OAuth client, with
+  `https://<ref>.supabase.co/auth/v1/callback` as the redirect URI. Decide the
+  identity-linking behaviour first — see §5.4.1 of the auth design for what
+  happens when a Google identity's email matches an already-invited user.
+
 ### Secrets the gate needs
 
 Repository → Settings → Secrets and variables → Actions:

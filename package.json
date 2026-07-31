@@ -14,7 +14,9 @@
     "db:migrate": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
     "db:prune": "tsx prisma/prune.ts",
-    "slo": "tsx scripts/slo-check.ts"
+    "slo": "tsx scripts/slo-check.ts",
+    "supabase:config": "tsx scripts/supabase-prod-config.ts",
+    "supabase:config:check": "tsx scripts/supabase-prod-config.ts --check"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
