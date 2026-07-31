@@ -61,6 +61,13 @@ function fakeAdmin(seed: { id: string; email: string; confirmed?: boolean }[] = 
         },
         error: null,
       }),
+    getUserById: (id) => {
+      const u = users.find((x) => x.id === id)
+      return Promise.resolve({
+        data: { user: u ? { id: u.id, ...(u.confirmed ? { confirmed_at: '2026-07-01T00:00:00Z' } : {}) } : null },
+        error: null,
+      })
+    },
     deleteUser: (id) => {
       calls.deleted.push(id)
       const i = users.findIndex((u) => u.id === id)

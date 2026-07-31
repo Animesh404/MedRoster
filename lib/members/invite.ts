@@ -24,6 +24,14 @@ export interface InviteAdminPort {
    * a pending one (see `lib/members/status.ts`).
    */
   listUsers(): Promise<{ data: { users: { id: string; email?: string; confirmed_at?: string }[] }; error: unknown }>
+  /**
+   * A single-key lookup, used by `revokeInvite` to tell a pending invite from
+   * an accepted account. Deliberately NOT `listUsers` + find: that answers a
+   * one-user question by walking the whole directory, and — worse — cannot
+   * distinguish "this user is absent" from "the listing was truncated", so a
+   * short read would make a confirmed member look revocable.
+   */
+  getUserById(id: string): Promise<{ data: { user: { id: string; confirmed_at?: string } | null }; error: unknown }>
   deleteUser(id: string): Promise<{ error: unknown }>
 }
 
@@ -146,14 +154,16 @@ export async function revokeInvite(
   // `status === 'invited'`, but the API is the boundary, and it has to hold on
   // its own: a manager with curl, a stale page, or a future caller all bypass
   // that UI check.
-  const { data: listed, error: listError } = await admin.listUsers()
-  if (listError) {
+  const { data: looked, error: lookupError } = await admin.getUserById(profile.authUserId)
+  if (lookupError) {
     return createAppError('BUSY', 'Could not reach the accounts service. Please try again.')
   }
-  const authUser = listed.users.find((u) => u.id === profile.authUserId)
-  if (authUser?.confirmed_at) {
+  if (looked.user?.confirmed_at) {
     return createAppError('ALREADY_CLAIMED', 'That person has already accepted their invite.')
   }
+  // `looked.user === null` means the account is already gone from Supabase
+  // (deleted out-of-band). Falling through is right: there is nothing left to
+  // protect, and the profile still needs its stale `authUserId` cleared below.
 
   const { error } = await admin.deleteUser(profile.authUserId)
   if (error) return createAppError('INVALID_INPUT', 'Could not revoke that invite.')

@@ -128,7 +128,10 @@ Both consequences listed above are also fixed:
   the API is the real boundary and now holds on its own.
 - **Re-inviting clears `deactivatedAt`.** Previously the invite sent, the invitee set a
   password, and `/auth/confirm` then refused them — a manager saw a successful invite while
-  the person could not get in.
+  the person could not get in. Note the scope: `inviteMember` rejects anyone who still has an
+  `authUserId`, so this path is only reachable for a deactivated member with **no** account
+  (deactivated before accepting, or after a revoke). A deactivated member who still has an
+  account is handled by Reactivate, which is the right route for them.
 
 ## ~~Members list is unpaginated past 1000 accounts~~ — FIXED
 
@@ -149,10 +152,14 @@ find an existing account and try to create a duplicate.
 
 Two deliberate choices:
 
-- **Termination is on a short page, not on `nextPage`/`lastPage`.** Those fields exist but
-  have moved between Supabase releases; trusting one that quietly disappears would
-  reintroduce exactly the silent truncation this removes. A short page is a property of the
-  data.
+- **Termination is on an EMPTY page** — not on `nextPage`/`lastPage`, and not on a short one.
+  Those fields have moved between Supabase releases, so trusting one that quietly disappears
+  would reintroduce the silent truncation. A *short* page is the subtler trap, and the first
+  version of this fix fell into it: "short" only means "last" if the service always honours
+  the `perPage` you asked for. If it ever caps `per_page` server-side, page 1 comes back
+  short, the walk stops on page 1, and the caller silently gets a fraction of the directory —
+  the original bug restored, with the error path never firing. Waiting for a genuinely empty
+  page is correct either way and costs one extra request.
 - **A partial result is never returned.** If any page errors, the caller gets the error and an
   empty list, so it renders a failure rather than a plausible roster with people missing.
 
@@ -160,4 +167,10 @@ A `maxPages` guard turns a misbehaving service into a loud error rather than a h
 
 **Still true:** the `adminPort()` factory is duplicated across two route files. Both now call
 the shared helper, so the paging logic itself lives in one place, but the adapter boilerplate
-is still written twice.
+is written twice.
+
+**Also worth knowing:** `revokeInvite` deliberately does NOT use this helper. It answers a
+single-key question ("has this one user accepted?") and now uses `getUserById` — one request,
+an exact answer, and no dependence on a listing being complete. Answering it by walking the
+directory would have made a truncated read look like "user absent", and the guard fails open
+on absence.

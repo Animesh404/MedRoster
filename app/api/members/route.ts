@@ -33,6 +33,10 @@ function adminPort(): InviteAdminPort {
       const { users, error } = await listAllAuthUsers((params) => admin.listUsers(params))
       return { data: { users }, error }
     },
+    getUserById: async (id) => {
+      const { data, error } = await admin.getUserById(id)
+      return { data: { user: data?.user ?? null }, error }
+    },
     deleteUser: async (id) => {
       const { error } = await admin.deleteUser(id)
       return { error }

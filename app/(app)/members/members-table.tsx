@@ -80,9 +80,10 @@ export function MembersTable({
   // True only when the mount-time status fetch below has failed — every row
   // is still showing page.tsx's placeholder `status: 'active'`, so a
   // no-account or deactivated member reads as "Active" with a live
-  // Deactivate button. Deactivating a no-account member sets deactivatedAt
-  // on someone who never had an account, and there is no reactivation
-  // feature in this branch — that misclick has no UI path back. Gates only
+  // Deactivate button. Deactivating a no-account member sets deactivatedAt on
+  // someone who never had an account — recoverable now via Reactivate, but
+  // still a wrong action taken on wrong information, so the buttons stay off
+  // until the real statuses arrive. Gates only
   // the per-row action buttons; the invite form above does not depend on
   // any row's status, so it stays usable.
   const [staleStatus, setStaleStatus] = useState(false)
