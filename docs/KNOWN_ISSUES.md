@@ -215,7 +215,36 @@ carrying keys finishes in ~750ms with zero `BUSY`, roughly 20× inside the limit
 `tests/concurrency/burst-keyed.test.ts` is the guard; every other concurrency test passes no
 key and therefore still measures the old path.
 
-**The open part:** `MutationOutcome` grows by one row per claim/release and is never pruned.
-At clinic scale that is slow — hundreds of rows a week — but it is unbounded. It is indexed on
-`createdAt` precisely so a retention job can delete anything older than a retry could plausibly
-arrive for (hours, not months). That job does not exist yet.
+**Retention (added 2026-07-31).** `pruneMutationOutcomes` (`lib/rules/retention.ts`) deletes
+records older than 24 hours, in batches with a ceiling so a backlog can never become one long
+transaction or an unbounded loop. It runs three ways: on a daily Vercel cron
+(`vercel.json` → `POST /api/cron/prune`, guarded by `CRON_SECRET`), via `npm run db:prune`, or
+directly from the function in any other scheduler.
+
+24h is deliberately far longer than needed — the client retries once, immediately, and the
+realtime echo TTL is 60s, so the real requirement is minutes. The consequences are asymmetric:
+keeping a row too long costs a few bytes; dropping one too early re-opens the bug idempotency
+exists to fix.
+
+The pruner cannot contend with live claiming. A claim in flight writes a row with
+`createdAt = now`, which the expiry predicate can never match, and the pruner takes no advisory
+lock, so it never joins the queue `withOrderedLocks` manages.
+
+
+## EventOutbox is also unpruned — and pruning it is NOT the same problem
+
+**Status:** open. Named here because the `MutationOutcome` retention job makes it conspicuous
+by contrast, and because the obvious fix is wrong.
+
+`EventOutbox` grows by one row per mutation (more, when a shift edit touches two weeks) and
+nothing deletes any of it.
+
+It cannot simply be given the same treatment. `GET /api/events/since` serves polling clients
+`WHERE id > lastId`. A client that has been away longer than the retention window would ask for
+events after an id that no longer exists, receive an empty page, and conclude it is **caught
+up** — silently missing every change in between. That is worse than an unbounded table: it is a
+UI confidently showing stale staffing.
+
+Anything done here needs a way for a client to detect that its cursor has fallen off the end
+and resync — the `truncated` flag in that response is the seed of one, but it currently only
+signals a capped page, not a lost cursor. Design that first; the deletion is the easy half.
