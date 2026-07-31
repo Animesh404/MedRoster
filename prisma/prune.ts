@@ -3,9 +3,7 @@
 // DATABASE_URL_DEV even though it is sitting there on disk.
 import 'dotenv/config'
 import { prisma } from '@/lib/db/client'
-import {
-  MUTATION_RETENTION_MS, OUTBOX_RETENTION_MS, pruneEventOutbox, pruneMutationOutcomes,
-} from '@/lib/rules/retention'
+import { MUTATION_RETENTION_MS, pruneMutationOutcomes } from '@/lib/rules/retention'
 
 /**
  * Manual runner for the retention job — `npm run db:prune`.
@@ -16,15 +14,12 @@ import {
  */
 async function main(): Promise<void> {
   const outcomeHours = Math.round(MUTATION_RETENTION_MS / 3_600_000)
-  const eventHours = Math.round(OUTBOX_RETENTION_MS / 3_600_000)
 
+  // EventOutbox is not pruned — see the note in app/api/cron/prune/route.ts.
   const outcomes = await pruneMutationOutcomes(prisma)
   console.log(`pruned ${outcomes.deleted} mutation outcome(s) older than ${outcomeHours}h`)
 
-  const events = await pruneEventOutbox(prisma)
-  console.log(`pruned ${events.deleted} outbox event(s) older than ${eventHours}h`)
-
-  if (outcomes.exhausted || events.exhausted) {
+  if (outcomes.exhausted) {
     console.warn('hit the batch ceiling — run again, a backlog remains')
   }
 }

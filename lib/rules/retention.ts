@@ -188,19 +188,21 @@ export async function pruneEventOutbox(
         where: { id: { in: expiring.map((r) => r.id) } },
       })
 
-      // `upsert` rather than `update`: the singleton may not exist yet on a
-      // database that has never pruned.
-      const current = await tx.outboxWatermark.findUnique({ where: { id: WATERMARK_ID } })
-      if (!current) {
-        await tx.outboxWatermark.create({ data: { id: WATERMARK_ID, prunedUpTo: highest } })
-      } else if (highest > current.prunedUpTo) {
-        // Never backwards. A lower value would re-expose a gap to clients that
-        // had already been told to resync past it.
-        await tx.outboxWatermark.update({
-          where: { id: WATERMARK_ID },
-          data: { prunedUpTo: highest },
-        })
-      }
+      // ONE statement, deliberately. A read-modify-write here (findUnique, then
+      // create-or-update) compares against a value that another run can have
+      // moved in between: run B commits 200, run A — holding a stale read of 0
+      // and having already passed its own guard — then writes 100. Rows up to
+      // 200 are gone while the watermark claims 100, so a client at 150 is told
+      // it is fine and silently loses events. `GREATEST` in the same statement
+      // as the write makes the comparison and the write atomic, and makes a
+      // concurrent first-ever prune a no-op rather than a P2002.
+      await tx.$executeRaw`
+        INSERT INTO "OutboxWatermark" ("id", "prunedUpTo", "updatedAt")
+        VALUES (${WATERMARK_ID}, ${highest}, now())
+        ON CONFLICT ("id") DO UPDATE
+          SET "prunedUpTo" = GREATEST("OutboxWatermark"."prunedUpTo", EXCLUDED."prunedUpTo"),
+              "updatedAt"  = now()
+      `
 
       return count
     }, TX_OPTIONS)

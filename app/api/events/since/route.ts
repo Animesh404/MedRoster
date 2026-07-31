@@ -21,19 +21,22 @@ export const GET = withAuth('shift:read', async (req) => {
     return errorResponse(createAppError('INVALID_INPUT', parsed.error.issues[0]!.message))
   }
 
-  // A cursor below the pruning watermark provably points at events that no
-  // longer exist. Without this the client would receive an empty (or partial)
-  // page for `id > lastId`, conclude it was CAUGHT UP, and silently miss every
-  // change since — which is why pruning the outbox was unsafe before the
-  // watermark existed.
-  const watermark = await prunedWatermark(prisma)
-  const cursorLost = BigInt(parsed.data.id) < watermark
-
   const rows = await prisma.eventOutbox.findMany({
     where: { topic: parsed.data.topic, id: { gt: BigInt(parsed.data.id) } },
     orderBy: { id: 'asc' },
     take: parsed.data.limit,
   })
+
+  // Read AFTER the rows, deliberately. These are two separate reads under READ
+  // COMMITTED, so a prune committing between them matters — and this ordering
+  // makes the race fail safe. Because the delete and the watermark advance
+  // commit together, any row already gone at row-read time has its advance
+  // committed too, so this later read must see it. The reverse order could
+  // read a stale-low watermark and an already-pruned (empty) page, and report
+  // `cursorLost: false` — exactly the silent-loss case this exists to prevent.
+  // Worst case here is a needless resync, which is the right direction to err.
+  const watermark = await prunedWatermark(prisma)
+  const cursorLost = BigInt(parsed.data.id) < watermark
 
   return NextResponse.json({
     events: rows.map((e) => ({
@@ -41,7 +44,19 @@ export const GET = withAuth('shift:read', async (req) => {
       payload: e.payload, mutationId: e.mutationId,
       createdAt: e.createdAt.toISOString(),
     })),
-    lastId: rows.length > 0 ? rows[rows.length - 1]!.id.toString() : parsed.data.id,
+    /**
+     * Where the client should resume.
+     *
+     * When the cursor is lost and the topic has NO surviving rows, this must
+     * advance to the watermark rather than echoing the client's own cursor
+     * back. Echoing it leaves the client below the watermark, so the next poll
+     * reports lost again — a resync every few seconds, forever, on every quiet
+     * topic. Advancing to the watermark loses nothing: everything at or below
+     * it is provably deleted, and the client has already been told to refetch.
+     */
+    lastId: rows.length > 0
+      ? rows[rows.length - 1]!.id.toString()
+      : (cursorLost ? watermark.toString() : parsed.data.id),
     /** True when the page was capped — the client should resync rather than assume it caught up. */
     truncated: rows.length === parsed.data.limit,
     /**

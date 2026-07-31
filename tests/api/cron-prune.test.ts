@@ -99,9 +99,7 @@ describe('cron/prune', () => {
     const res = await route.GET(req(`Bearer ${SECRET}`))
 
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({
-      deleted: 2, exhausted: false, mutationOutcomes: 2, outboxEvents: 0,
-    })
+    expect(await res.json()).toEqual({ deleted: 2, exhausted: false, mutationOutcomes: 2 })
     const left = await db.mutationOutcome.findMany({ select: { mutationId: true } })
     expect(left.map((r) => r.mutationId)).toEqual(['fresh'])
   })
@@ -125,28 +123,27 @@ describe('cron/prune', () => {
   })
 })
 
-describe('cron/prune — outbox events', () => {
-  it('prunes expired outbox events and advances the watermark', async () => {
+describe('cron/prune — leaves EventOutbox alone', () => {
+  // Deliberate, not an oversight. EventOutbox is the sole store behind
+  // /my-shifts' drop notices and the shift activity timeline, so deleting a
+  // row there can delete a notice a nurse has not seen. `pruneEventOutbox`
+  // exists and works; it is not wired in until those notices have a durable
+  // home. This test is what stops it being wired in by accident.
+  it('does not delete outbox events, however old', async () => {
     const db = await getTestDb()
-    const { OUTBOX_RETENTION_MS, prunedWatermark } = await import('@/lib/rules/retention')
+    const { OUTBOX_RETENTION_MS } = await import('@/lib/rules/retention')
 
-    const old = await db.eventOutbox.create({
-      data: {
-        topic: 'week:2026-W31', type: 'shift.claimed', payload: { shiftId: 1 },
-        createdAt: new Date(Date.now() - OUTBOX_RETENTION_MS - 60_000),
-      },
-    })
     await db.eventOutbox.create({
-      data: { topic: 'week:2026-W31', type: 'shift.claimed', payload: { shiftId: 2 } },
+      data: {
+        topic: 'week:2026-W31', type: 'shift.claims_dropped', payload: { shiftId: 1 },
+        createdAt: new Date(Date.now() - OUTBOX_RETENTION_MS - 30 * 24 * 60 * 60 * 1000),
+      },
     })
 
     const res = await route.GET(req(`Bearer ${SECRET}`))
 
     expect(res.status).toBe(200)
-    expect((await res.json()).outboxEvents).toBe(1)
     expect(await db.eventOutbox.count()).toBe(1)
-    // The watermark is what stops a stranded client believing it is current.
-    // Deleting without advancing it is the silent-data-loss case.
-    expect(await prunedWatermark(db)).toBe(old.id)
+    expect((await res.json()).outboxEvents).toBeUndefined()
   })
 })

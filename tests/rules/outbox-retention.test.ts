@@ -70,16 +70,46 @@ describe('pruneEventOutbox', () => {
   // A later run that deletes lower ids (possible only via a clock change or a
   // manual insert) must not walk the watermark backwards — that would silently
   // re-expose a gap to clients that had already been told to resync.
-  it('never lowers the watermark', async () => {
+  it('never lowers the watermark, even when a later run deletes a lower id', async () => {
     const db = await getTestDb()
     const high = await seedEvent(OUTBOX_RETENTION_MS + HOUR)
     await pruneEventOutbox(db, { now: NOW })
     expect(await prunedWatermark(db)).toBe(high)
 
-    // A second run with nothing to do.
-    await pruneEventOutbox(db, { now: NOW })
+    // An expired row with an id BELOW the current watermark. Contrived — it
+    // takes a clock change or a manual insert — but it is the only input that
+    // actually exercises the never-go-backwards guard. An earlier version of
+    // this test just ran the pruner twice with nothing to delete, which never
+    // enters the transaction at all: an unconditional overwrite passed it.
+    await db.$executeRawUnsafe(`
+      INSERT INTO "EventOutbox" ("id", topic, type, payload, "createdAt")
+      VALUES (${Number(high) - 1}, 'week:2026-W31', 'shift.claimed', '{}'::jsonb,
+              TIMESTAMPTZ '${new Date(NOW.getTime() - OUTBOX_RETENTION_MS - HOUR).toISOString()}')
+    `)
 
+    const { deleted } = await pruneEventOutbox(db, { now: NOW })
+
+    expect(deleted).toBe(1)
     expect(await prunedWatermark(db)).toBe(high)
+  })
+
+  // The atomicity the whole design rests on. If the watermark write fails, the
+  // delete must roll back with it — rows gone with the watermark not covering
+  // them is precisely the silent-loss case.
+  it('rolls the delete back if the watermark cannot be advanced', async () => {
+    const db = await getTestDb()
+    await seedEvent(OUTBOX_RETENTION_MS + HOUR)
+
+    // Make the watermark write fail: a CHECK that rejects any row.
+    await db.$executeRawUnsafe(
+      `ALTER TABLE "OutboxWatermark" ADD CONSTRAINT tmp_block CHECK ("prunedUpTo" < 0) NOT VALID`)
+    try {
+      await expect(pruneEventOutbox(db, { now: NOW })).rejects.toThrow()
+      // The event survives, because the transaction took both or neither.
+      expect(await db.eventOutbox.count()).toBe(1)
+    } finally {
+      await db.$executeRawUnsafe(`ALTER TABLE "OutboxWatermark" DROP CONSTRAINT tmp_block`)
+    }
   })
 
   it('clears a backlog larger than one batch, watermark tracking the last id', async () => {

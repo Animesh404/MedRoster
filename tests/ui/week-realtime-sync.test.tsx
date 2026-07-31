@@ -159,9 +159,12 @@ describe('WeekRealtimeSync — a cursor whose events have been pruned', () => {
       call += 1
       // Seed normally, so the component is past its first catch-up.
       if (call === 1) return new Response(JSON.stringify(eventsSinceBody([], '10')))
-      // Then the server reports the cursor has fallen off the end. Note the
-      // event list is EMPTY — which pre-`cursorLost` was read as "nothing has
-      // happened", the silent-staleness bug this exists to prevent.
+      // Then the server reports the cursor has fallen off the end. The event
+      // list is EMPTY — which pre-`cursorLost` read as "nothing has happened",
+      // the silent-staleness bug this exists to prevent. `lastId` is the
+      // WATERMARK, matching what the real route now returns for an empty
+      // topic; echoing the client's own cursor back here (which the route used
+      // to do) is what caused a resync every poll, forever.
       return new Response(JSON.stringify({
         events: [], lastId: '900', truncated: false, cursorLost: true,
       }))
