@@ -37,12 +37,12 @@ jobs:
           cache: npm
 
       - name: Install
+        # `postinstall` runs `prisma generate`, so the client is present after
+        # this step. It used to be a separate explicit step, which meant CI
+        # generated the client in a way Vercel's build did not — and a build
+        # that only fails on Vercel is one you find out about from a failed
+        # deploy. Both now depend on the same hook.
         run: npm ci
-
-      - name: Generate Prisma client
-        # The client is generated, not committed, so typecheck and tests both
-        # need this before they can resolve @prisma/client.
-        run: npx prisma generate
 
       - name: Typecheck
         run: npx tsc --noEmit
