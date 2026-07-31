@@ -189,7 +189,12 @@ describe('GET /api/events/since — lost cursors', () => {
     const res = await eventsSinceGet(new Request('http://localhost/api/events/since?topic=week:2026-W31&id=100'), noParams)
 
     expect(res.status).toBe(200)
-    expect((await res.json()).cursorLost).toBe(true)
+    const body = await res.json()
+    expect(body.cursorLost).toBe(true)
+    // Advanced to the watermark, NOT echoed back. Echoing leaves the client
+    // below the watermark, so it reports lost again on the very next poll —
+    // a resync every few seconds, forever, on every quiet topic.
+    expect(body.lastId).toBe('500')
   })
 
   it('does not report a cursor at or above the watermark as lost', async () => {
