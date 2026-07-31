@@ -182,6 +182,11 @@ Pointing this at your own Supabase project, three things bite:
 Not currently deployed to a public URL. The Supabase database is migrated and
 seeded and the app runs against it; only the hosting step is outstanding.
 
+Set `CRON_SECRET` to any long random string. `vercel.json` schedules a nightly
+`POST /api/cron/prune`, which clears expired idempotency records; the route refuses to run
+without that secret rather than sitting open, so leaving it unset means the table grows.
+Locally or on another host, `npm run db:prune` does the same thing.
+
 To deploy on Vercel: set `APP_ENV=production`, `DATABASE_URL_PROD`,
 `SUPABASE_SERVICE_ROLE_KEY`, `APP_URL`, `CLINIC_TZ` and the two
 `NEXT_PUBLIC_SUPABASE_*` values, then run
