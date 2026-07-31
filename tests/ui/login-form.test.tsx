@@ -20,7 +20,7 @@ vi.mock('@/lib/supabase/browser', () => ({
 
 describe('LoginForm', () => {
   it('offers password sign-in', () => {
-    render(<LoginForm demoPassword="medroster123" />)
+    render(<LoginForm next="/dashboard" demoPassword="medroster123" />)
     expect(screen.getByLabelText(/email/i)).toBeInTheDocument()
     expect(screen.getByLabelText(/password/i)).toBeInTheDocument()
   })
@@ -37,14 +37,14 @@ describe('LoginForm', () => {
    * broken door straight back on the login page.
    */
   it('offers no Google sign-in while the provider is disabled', () => {
-    render(<LoginForm demoPassword="medroster123" />)
+    render(<LoginForm next="/dashboard" demoPassword="medroster123" />)
 
     expect(screen.queryByRole('button', { name: /google/i })).toBeNull()
     expect(screen.queryByText(/continue with google/i)).toBeNull()
   })
 
   it('still offers the magic-link route, which is enabled', () => {
-    render(<LoginForm demoPassword="medroster123" />)
+    render(<LoginForm next="/dashboard" demoPassword="medroster123" />)
     expect(screen.getByRole('button', { name: /sign-in link/i })).toBeInTheDocument()
   })
 })

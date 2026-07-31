@@ -1,12 +1,18 @@
 name: CI
 
 on:
-  # Deliberately NOT main. The go-live gate's `verify` stage runs this exact
-  # work on every push to main, so listing main here ran the whole suite twice
-  # per merge — double the minutes, and two results to reconcile when they
-  # disagreed about a flake.
-  push:
-    branches: ['feat/**', 'fix/**', 'chore/**', 'perf/**', 'docs/**']
+  # `pull_request` only, and deliberately so.
+  #
+  # Two duplications used to live here. Listing `main` under push ran this
+  # entire suite alongside the go-live gate's `verify` stage, which does
+  # identical work — every merge paid for it twice. Listing feature branches
+  # under push then ran it twice more on any branch with an open PR, once for
+  # the branch ref and once for the PR ref, which no concurrency group can
+  # collapse because they are different refs.
+  #
+  # `pull_request` covers the whole PR lifecycle including every later push
+  # (the `synchronize` event), so nothing is lost. Pushes to a branch with no
+  # PR open yet are what `npm test` is for.
   pull_request:
     branches: [main]
 
