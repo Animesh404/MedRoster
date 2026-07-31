@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import Image from 'next/image'
+import heroClinicTeam from '@/assets/images/hero-clinic-team.jpg'
 import Link from 'next/link'
 import { getRosterStats } from '@/lib/ui/stats'
 import { LoginForm } from './login-form'
@@ -28,7 +29,8 @@ export default async function LoginPage({
     <div className="grid min-h-screen lg:grid-cols-2">
       <div className="hero-gradient relative hidden flex-col justify-between overflow-hidden p-10 text-white lg:flex">
         <Image
-          src="/images/hero-clinic-team.jpg"
+          src={heroClinicTeam}
+          placeholder="blur"
           alt=""
           fill
           priority
