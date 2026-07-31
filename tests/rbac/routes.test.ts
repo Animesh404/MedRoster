@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('@/lib/auth/session', () => ({ currentSessionUser: () => Promise.resolve(null) }))
 
 const { WITH_AUTH_BRAND } = await import('@/lib/auth/with-auth')
+const { WITH_CRON_BRAND } = await import('@/lib/auth/with-cron-auth')
 
 // @types/node is pinned to v20 here, which predates `fs.globSync` (added in the
 // Node 22 typings). The function exists at runtime on our Node version; this
@@ -33,47 +34,57 @@ describe('API route authorisation coverage', () => {
   const allFiles = globSync('app/api/**/route.ts')
 
   /**
-   * Routes that legitimately do NOT go through `withAuth`, each with the reason.
+   * Routes that legitimately do NOT go through `withAuth`, each with a reason.
    *
-   * This is an escape hatch, and it is deliberately shaped to be an awkward
-   * one: adding an entry is a visible, reviewable edit to the very test that
-   * exists to stop routes shipping unguarded. A route belongs here only when it
-   * has no MedRoster session to authorize against AND enforces its own check —
-   * never merely because `withAuth` was inconvenient.
+   * An escape hatch, shaped to stay awkward. A route belongs here only when it
+   * has no MedRoster session to authorize against — and it does NOT get to be
+   * unguarded as a result: the assertions below hold it to the same standard,
+   * a runtime brand on the real exported function, just a different brand.
    *
-   * Every exempt route is still asserted below to carry SOME authorization.
+   * An earlier version of this exemption checked that the file's source
+   * CONTAINED the guard's name. That was satisfied by a comment: a handler with
+   * an empty body and the string `CRON_SECRET` in its JSDoc passed, deleting
+   * rows for anyone on the internet. This file's own MIN-7 note explains why
+   * source text is not evidence; the exemption must not be the one place that
+   * forgets it.
    */
-  const UNAUTHENTICATED_BY_DESIGN: Record<string, { reason: string; guard: string }> = {
+  const UNAUTHENTICATED_BY_DESIGN: Record<string, { reason: string; brand: symbol }> = {
     'app/api/cron/prune/route.ts': {
-      reason: 'Invoked by Vercel Cron, which carries no user session.',
-      guard: 'CRON_SECRET',
+      reason: 'Invoked by Vercel Cron, which carries no user session; guarded by CRON_SECRET.',
+      brand: WITH_CRON_BRAND,
     },
   }
 
   const files = allFiles.filter((f) => !(f in UNAUTHENTICATED_BY_DESIGN))
-  const exempt = allFiles.filter((f) => f in UNAUTHENTICATED_BY_DESIGN)
+  const exemptPaths = Object.keys(UNAUTHENTICATED_BY_DESIGN)
 
-  // An exemption is not permission to be unguarded — it only changes WHICH
-  // guard is required. Without this, the allowlist would be a way to ship an
-  // open endpoint by adding one line.
-  it.each(exempt)('%s is exempt from withAuth but enforces its own guard', (file) => {
-    const src = readFileSync(file, 'utf8')
-    const { guard } = UNAUTHENTICATED_BY_DESIGN[file]!
-    expect(src, `${file} is exempt but references no guard`).toContain(guard)
-    // And it must refuse when the secret is absent, rather than running open.
-    expect(src, `${file} must refuse to run when ${guard} is unset`).toMatch(/if \s*\(!\s*\w+\)/)
+  // Pins the list. Adding an exemption now fails here first, so it cannot be a
+  // quiet one-line edit buried in an unrelated diff — it has to be stated twice,
+  // deliberately.
+  it('has exactly the exemptions it is meant to have', () => {
+    expect(exemptPaths).toEqual(['app/api/cron/prune/route.ts'])
   })
 
-  it.skipIf(files.length === 0)('finds route files to check', () => {
-    expect(files.length).toBeGreaterThan(0)
+  // A typo'd path would silently exempt nothing and guard nothing.
+  it.each(exemptPaths)('%s (exempt) actually exists', (file) => {
+    expect(allFiles, `${file} is exempted but is not a route file`).toContain(file)
   })
 
-  // Cheap first line: a route written as `export const GET = withAuth(...)`
-  // must contain the literal text. Kept because it's a fast, readable smoke
-  // check, but it is NOT the real guard (MIN-7): it's evadable by
-  // `export { GET }` re-exporting a handler defined elsewhere, or simply by
-  // reformatting the call across lines so the literal substring vanishes
-  // from what the regex sees on a single line.
+  it.each(exemptPaths)('%s exports handlers carrying its declared guard brand', async (file) => {
+    const { reason, brand } = UNAUTHENTICATED_BY_DESIGN[file]!
+    const mod: Record<string, unknown> = await import(`@/${file.replace(/\.ts$/, '')}`)
+
+    const exported = HTTP_VERBS.filter((verb) => verb in mod)
+    expect(exported.length, `${file} exports no HTTP handlers`).toBeGreaterThan(0)
+
+    for (const verb of exported) {
+      expect(
+        (mod[verb] as Record<symbol, unknown>)[brand],
+        `${file} ${verb} is exempt from withAuth (${reason}) but carries no guard brand`,
+      ).toBe(true)
+    }
+  })
+
   it.each(files)('%s declares a permission via withAuth (regex smoke check)', (file) => {
     const src = readFileSync(file, 'utf8')
     expect(src, `${file} must import withAuth`).toContain('withAuth')

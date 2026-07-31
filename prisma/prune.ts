@@ -14,8 +14,11 @@ import { MUTATION_RETENTION_MS, pruneMutationOutcomes } from '@/lib/rules/retent
  */
 async function main(): Promise<void> {
   const hours = Math.round(MUTATION_RETENTION_MS / 3_600_000)
-  const deleted = await pruneMutationOutcomes(prisma)
+  const { deleted, exhausted } = await pruneMutationOutcomes(prisma)
   console.log(`pruned ${deleted} mutation outcome(s) older than ${hours}h`)
+  if (exhausted) {
+    console.warn('hit the batch ceiling — run again, a backlog remains')
+  }
 }
 
 main()

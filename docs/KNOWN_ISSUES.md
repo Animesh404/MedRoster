@@ -226,9 +226,10 @@ realtime echo TTL is 60s, so the real requirement is minutes. The consequences a
 keeping a row too long costs a few bytes; dropping one too early re-opens the bug idempotency
 exists to fix.
 
-The pruner cannot contend with live claiming. A claim in flight writes a row with
-`createdAt = now`, which the expiry predicate can never match, and the pruner takes no advisory
-lock, so it never joins the queue `withOrderedLocks` manages.
+The pruner will not contend with live claiming at this schedule and scale. At the row level it
+cannot — an in-flight claim writes `createdAt = now`, which the expiry predicate never matches,
+and the pruner takes no advisory lock. It does share the connection pool that turns claim
+bursts into capacity errors, so "cannot contend" would be overstating it.
 
 
 ## EventOutbox is also unpruned — and pruning it is NOT the same problem
@@ -236,14 +237,22 @@ lock, so it never joins the queue `withOrderedLocks` manages.
 **Status:** open. Named here because the `MutationOutcome` retention job makes it conspicuous
 by contrast, and because the obvious fix is wrong.
 
-`EventOutbox` grows by one row per mutation (more, when a shift edit touches two weeks) and
-nothing deletes any of it.
+`EventOutbox` grows by at least one row per mutation — two when a shift edit touches two weeks,
+plus a row per imported shift — and nothing deletes any of it. Note it grows strictly **faster**
+than `MutationOutcome`, which only gets a row when a client bothers to send a key. This work
+pruned the slower-growing table and left the faster one, which is defensible on risk but worth
+saying plainly.
 
 It cannot simply be given the same treatment. `GET /api/events/since` serves polling clients
-`WHERE id > lastId`. A client that has been away longer than the retention window would ask for
-events after an id that no longer exists, receive an empty page, and conclude it is **caught
-up** — silently missing every change in between. That is worse than an unbounded table: it is a
-UI confidently showing stale staffing.
+`WHERE id > lastId`, so a client whose cursor has been pruned away asks for events after an id
+that no longer exists and concludes it is **caught up**, silently missing every change in
+between.
+
+Two cases, and only one is genuinely bad. If *some* newer rows survive, the client gets a
+partial page with `truncated: false`, applies it, and skips the gap — but `onEvent` triggers a
+full `router.refresh()`, which refetches server state and largely papers over the miss. The bad
+case is a topic pruned clean: nothing comes back, the client concludes it is current, and
+nothing ever prompts a refresh. That is a UI confidently showing stale staffing.
 
 Anything done here needs a way for a client to detect that its cursor has fallen off the end
 and resync — the `truncated` flag in that response is the seed of one, but it currently only
