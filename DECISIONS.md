@@ -234,3 +234,75 @@ Neither outcome is acceptable by accident. Enabling Google means picking one
 deliberately, configuring it, and testing both paths — see §5.4.1 of the auth
 design.
 
+---
+
+## Emailed sign-in links ride the URL fragment, because the templates cannot be changed
+
+**No custom SMTP. The app adapts to Supabase's default email templates rather
+than requiring a mail provider this project is not ready to take on.**
+
+MedRoster ships three `{{ .TokenHash }}` templates in `supabase/templates/`.
+They point at `/auth/confirm`, where the **server** exchanges the hash and sets
+the session cookie before anything renders. That is the better design, and it
+is what runs locally.
+
+It cannot run in production. The Supabase Management API refuses:
+
+> Email template modification is not available for free tier projects using the
+> default email provider.
+
+So custom templates are not merely gated behind a paid plan — they are gated
+behind **configuring SMTP**, which was a cost this project could not take on at
+this stage. The decision was to keep the built-in mailer and make the app work
+with what it sends.
+
+### What the default templates actually do
+
+Measured with `admin/generate_link` rather than inferred from documentation:
+
+```
+GET  https://<ref>.supabase.co/auth/v1/verify?token=…&type=recovery
+303  https://<app>/auth/reset-password#access_token=…&refresh_token=…&type=recovery
+```
+
+The session arrives **after the `#`**. A browser never transmits a fragment to
+the server, so every server-side route — `/auth/confirm`, `/auth/callback` —
+receives a bare URL and cannot distinguish a valid link from an expired one. It
+correctly concluded "no token" and told people their link was dead.
+
+### The consequence for the code
+
+`app/auth/hash-session-bridge.tsx` reads the fragment on the client, exchanges
+it via `setSession`, and strips it from the address bar. It is mounted on the
+three pages these links land on. Magic link moved off `/auth/callback` to
+`/auth/complete`, because a route handler cannot render a client component and
+so could never have handled a fragment at all.
+
+Two details that are not obvious and cost a debugging cycle each:
+
+- **`router.refresh()` does not work here.** It re-fetches the RSC payload
+  before the browser client has committed its auth cookies, so the server
+  re-renders the signed-out branch and nothing retries. Observed directly: the
+  page sat on "this link is no longer valid" while the cookie was already
+  present, and a manual reload showed the form instantly. A full
+  `location.replace` carries the cookie and drops the fragment in one step.
+- **Tokens are stripped on the failure path too.** A rejected token left in
+  browser history is no less replayable than an accepted one.
+
+`e2e/hash-session.spec.ts` covers this in a real browser, and has to: a
+fragment is invisible to any server-side test, so a request-level assertion
+cannot tell a working link from a broken one — it never receives the part that
+decides.
+
+### What this costs, and when to revisit
+
+The built-in mailer only delivers to addresses on the Supabase project's own
+team and caps near 2–3 emails per hour. **Invites to real clinic staff will not
+arrive.** The flow is correct; the delivery is not.
+
+Configuring SMTP lifts both limits at once — real delivery, and custom
+templates. At that point `npm run supabase:config` installs the `TokenHash`
+templates, `/auth/confirm` starts handling these links server-side again, and
+the bridge becomes dead weight worth removing. Until then it is the only thing
+making an emailed link work at all.
+

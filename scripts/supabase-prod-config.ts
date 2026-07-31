@@ -51,7 +51,7 @@ function template(name: string): string {
  * a tool that overwrites every setting makes any dashboard change look like
  * drift, and people stop running it.
  */
-const REQUIRED: Record<string, string | boolean> = {
+const GATING: Record<string, string | boolean> = {
   // Invite-only. Layer 1 of three: the other two (`shouldCreateUser: false` on
   // magic link, and the roster check in /auth/callback) keep a stranger out of
   // roster data, but without this anyone can create an auth account at all.
@@ -61,7 +61,21 @@ const REQUIRED: Record<string, string | boolean> = {
   // sends the recipient to a machine they do not have.
   site_url: APP_URL,
   uri_allow_list: `${APP_URL}/**`,
+}
 
+/**
+ * Applied SEPARATELY, because Supabase refuses them on a free-tier project
+ * still using the built-in mailer:
+ *
+ *   "Email template modification is not available for free tier projects using
+ *    the default email provider."
+ *
+ * Sent together with the settings above, that 400 took all of them down with
+ * it — one blocked setting stopped three applicable ones. Two requests means a
+ * project that cannot have custom templates still gets its signup gate closed
+ * and its URLs corrected.
+ */
+const TEMPLATES: Record<string, string> = {
   // The templates are the load-bearing part. Supabase's defaults use
   // `{{ .ConfirmationURL }}`, which returns the token in the URL FRAGMENT —
   // never sent to the server, so /auth/confirm receives nothing and the flow
@@ -74,6 +88,8 @@ const REQUIRED: Record<string, string | boolean> = {
   mailer_templates_magic_link_content: template('magic-link'),
   mailer_subjects_magic_link: 'Sign in to MedRoster',
 }
+
+const REQUIRED: Record<string, string | boolean> = { ...GATING, ...TEMPLATES }
 
 async function readConfig(): Promise<Record<string, unknown>> {
   const res = await fetch(API, { headers: { Authorization: `Bearer ${TOKEN}` } })
@@ -118,22 +134,60 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  const res = await fetch(API, {
-    method: 'PATCH',
-    headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(REQUIRED),
-  })
-  if (!res.ok) {
-    throw new Error(`PATCH config failed: ${res.status} ${await res.text().catch(() => '')}`)
+  // Two requests, not one. See the note on TEMPLATES.
+  const groups: [string, Record<string, string | boolean>][] = [
+    ['settings', GATING],
+    ['email templates', TEMPLATES],
+  ]
+
+  let blocked: string | null = null
+  for (const [label, payload] of groups) {
+    const pending = Object.keys(payload).filter((k) => stale.includes(k))
+    if (pending.length === 0) continue
+
+    const res = await fetch(API, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (res.ok) {
+      console.log(`\nApplied ${pending.length} ${label}.`)
+      continue
+    }
+
+    const detail = await res.text().catch(() => '')
+    if (label === 'email templates' && /free tier|custom SMTP/i.test(detail)) {
+      // Not a script failure. The project cannot accept templates at all until
+      // SMTP is configured, and saying so is more use than a stack trace.
+      blocked = detail
+      continue
+    }
+    throw new Error(`PATCH ${label} failed: ${res.status} ${detail}`)
   }
 
-  // Read back rather than trusting the 200. The API accepts unknown keys
+  // Read back rather than trusting the 200s. The API accepts unknown keys
   // silently, so a typo'd setting name would otherwise report success while
   // changing nothing.
   const after = drifted(await readConfig())
-  if (after.length > 0) {
-    console.error(`\nApplied, but these did not take effect: ${after.join(', ')}`)
+  const templateKeys = new Set(Object.keys(TEMPLATES))
+  const stillWrong = after.filter((k) => !templateKeys.has(k))
+
+  if (stillWrong.length > 0) {
+    console.error(`\nApplied, but these did not take effect: ${stillWrong.join(', ')}`)
     console.error('Check the key names against the Management API schema.')
+    process.exit(1)
+  }
+
+  if (blocked !== null) {
+    console.error('\nEMAIL TEMPLATES NOT APPLIED — Supabase refused them:')
+    console.error(`  ${blocked}`)
+    console.error(
+      '\nUntil custom SMTP is configured, this project sends Supabase\'s DEFAULT\n' +
+      'templates, which put the token in the URL fragment. A fragment is never\n' +
+      'sent to the server, so /auth/confirm receives nothing: invites and password\n' +
+      'resets will send a real email whose link cannot work.\n\n' +
+      'Configure SMTP (Authentication -> Emails -> SMTP Settings), then re-run this.',
+    )
     process.exit(1)
   }
 
