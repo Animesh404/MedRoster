@@ -232,28 +232,49 @@ and the pruner takes no advisory lock. It does share the connection pool that tu
 bursts into capacity errors, so "cannot contend" would be overstating it.
 
 
-## EventOutbox is also unpruned — and pruning it is NOT the same problem
+## ~~EventOutbox is also unpruned~~ — FIXED
 
-**Status:** open. Named here because the `MutationOutcome` retention job makes it conspicuous
-by contrast, and because the obvious fix is wrong.
+**Status:** fixed 2026-07-31. The original entry is kept below, because the reason it was
+deferred is the reason the fix has the shape it does.
+
+### The original problem
 
 `EventOutbox` grows by at least one row per mutation — two when a shift edit touches two weeks,
-plus a row per imported shift — and nothing deletes any of it. Note it grows strictly **faster**
-than `MutationOutcome`, which only gets a row when a client bothers to send a key. This work
-pruned the slower-growing table and left the faster one, which is defensible on risk but worth
-saying plainly.
+plus a row per imported shift — and nothing deleted any of it. It grows strictly **faster** than
+`MutationOutcome`.
 
-It cannot simply be given the same treatment. `GET /api/events/since` serves polling clients
-`WHERE id > lastId`, so a client whose cursor has been pruned away asks for events after an id
-that no longer exists and concludes it is **caught up**, silently missing every change in
-between.
+It could not simply be given the same treatment. `GET /api/events/since` serves polling clients
+`WHERE id > lastId`, so a client whose cursor was pruned away asks for events after an id that
+no longer exists and concludes it is **caught up**, silently missing every change in between.
 
-Two cases, and only one is genuinely bad. If *some* newer rows survive, the client gets a
-partial page with `truncated: false`, applies it, and skips the gap — but `onEvent` triggers a
-full `router.refresh()`, which refetches server state and largely papers over the miss. The bad
-case is a topic pruned clean: nothing comes back, the client concludes it is current, and
-nothing ever prompts a refresh. That is a UI confidently showing stale staffing.
+Two cases, only one genuinely bad. If some newer rows survive, the client gets a partial page
+with `truncated: false`, applies it, and skips the gap — but `onEvent` triggers a full
+`router.refresh()`, which largely papers over the miss. The bad case is a topic pruned clean:
+nothing comes back, the client concludes it is current, and nothing ever prompts a refresh.
 
-Anything done here needs a way for a client to detect that its cursor has fallen off the end
-and resync — the `truncated` flag in that response is the seed of one, but it currently only
-signals a capped page, not a lost cursor. Design that first; the deletion is the easy half.
+### The fix
+
+Deleting events is safe only if a stranded client can find out. So the signal came first:
+
+1. **`OutboxWatermark`** — a single row recording the highest `EventOutbox.id` ever deleted.
+   `pruneEventOutbox` advances it **in the same transaction as the delete**. That atomicity is
+   the whole safety argument: rows disappearing without the watermark moving is exactly the
+   silent-loss case.
+2. **`GET /api/events/since` returns `cursorLost`** when the requested `id` is below the
+   watermark. Deliberately distinct from `truncated`: that means "too many to send at once" and
+   is recoverable by paging forward, this means "what you asked for is gone" and is not.
+3. **The client treats `cursorLost` like `truncated`** — adopt the server's cursor and
+   `onResync()`, which is already wired to `router.refresh()`. It is read as optional
+   (`cursorLost === true`) so a cached bundle running against a newer server, or vice versa,
+   behaves exactly as it did before rather than crashing on an unknown field.
+4. Only then does the cron prune the outbox, at a **7-day** window — far longer than the
+   client's own catch-up cadence (it polls every few seconds and on tab visibility), so an
+   ordinary backgrounded tab replays events rather than resyncing.
+
+Verified against the live database: a 10-day-old event deleted, the watermark advancing from
+`0` to that row's id.
+
+**Not addressed:** a client whose cursor is lost resyncs once and is then current, which is
+correct — but it is a full page refetch. If that ever becomes expensive, the answer is a
+narrower resync, not a longer retention window.
+

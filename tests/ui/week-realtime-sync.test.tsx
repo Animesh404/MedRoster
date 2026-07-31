@@ -143,3 +143,79 @@ describe('WeekRealtimeSync — cross-topic mutationId dedup (IMPORTANT-4)', () =
     expect(routers[1]!.refresh).toHaveBeenCalledTimes(1)
   })
 })
+
+/**
+ * What makes pruning `EventOutbox` safe.
+ *
+ * Once old events are deleted, a client whose cursor points below them asks for
+ * `id > lastId` and gets nothing back — indistinguishable from "no activity".
+ * `cursorLost` is the server saying "what you asked for is gone"; the client
+ * must refetch rather than carry on believing it is current.
+ */
+describe('WeekRealtimeSync — a cursor whose events have been pruned', () => {
+  it('refetches rather than assuming it is up to date', async () => {
+    let call = 0
+    const fetchMock = vi.fn(async () => {
+      call += 1
+      // Seed normally, so the component is past its first catch-up.
+      if (call === 1) return new Response(JSON.stringify(eventsSinceBody([], '10')))
+      // Then the server reports the cursor has fallen off the end. Note the
+      // event list is EMPTY — which pre-`cursorLost` was read as "nothing has
+      // happened", the silent-staleness bug this exists to prevent.
+      return new Response(JSON.stringify({
+        events: [], lastId: '900', truncated: false, cursorLost: true,
+      }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<WeekRealtimeSync isoWeek="2026-W32">{null}</WeekRealtimeSync>)
+    await flush()
+    expect(routers[0]!.refresh).not.toHaveBeenCalled()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_000) })
+
+    expect(routers[0]!.refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('adopts the server cursor, so it does not report lost forever', async () => {
+    let call = 0
+    const fetchMock = vi.fn(async (url: string) => {
+      call += 1
+      // Call 1 is the seed. From call 2 on, the answer depends purely on the
+      // cursor the client sends: below the watermark it is lost, at or above
+      // it the client is current again.
+      if (call === 1) return new Response(JSON.stringify(eventsSinceBody([], '0')))
+      const id = Number(new URL(String(url), 'http://localhost').searchParams.get('id'))
+      if (id < 900) {
+        return new Response(JSON.stringify({ events: [], lastId: '900', truncated: false, cursorLost: true }))
+      }
+      return new Response(JSON.stringify(eventsSinceBody([], '900')))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<WeekRealtimeSync isoWeek="2026-W32">{null}</WeekRealtimeSync>)
+    await flush()
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_000) })
+    const afterFirstLoss = routers[0]!.refresh.mock.calls.length
+
+    // Two more quiet polls: now caught up, so no further refreshes.
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_000) })
+
+    expect(afterFirstLoss).toBe(1)
+    expect(routers[0]!.refresh).toHaveBeenCalledTimes(1)
+  })
+
+  // A resync on every mount would be a pointless refetch: the page has just
+  // rendered fresh server state.
+  it('does not refetch when the cursor is lost on the very first catch-up', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      events: [], lastId: '900', truncated: false, cursorLost: true,
+    }))))
+
+    render(<WeekRealtimeSync isoWeek="2026-W32">{null}</WeekRealtimeSync>)
+    await flush()
+
+    expect(routers[0]!.refresh).not.toHaveBeenCalled()
+  })
+})
