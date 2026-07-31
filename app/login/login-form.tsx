@@ -47,7 +47,7 @@ export function LoginForm({
     try {
       await supabase.auth.signInWithOtp({
         email,
-        options: { shouldCreateUser: false, emailRedirectTo: `${window.location.origin}/auth/callback` },
+        options: { shouldCreateUser: false, emailRedirectTo: `${window.location.origin}/auth/complete` },
       })
     } catch {
       // Swallowed on purpose, same as the forgot-password page: a network
