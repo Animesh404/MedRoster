@@ -5,7 +5,7 @@ import { splitCsv } from './csv'
 import type { Issue } from './issues'
 import { createFieldRule, createRuleContext, fatal, repairing, type RuleContext } from './registry'
 
-export const MAX_SHIFT_MINUTES = 720 // 12h — see §5.3
+const MAX_SHIFT_MINUTES = 720 // 12h — see §5.3
 
 export interface ShiftRecord {
   externalId: number
@@ -44,7 +44,7 @@ const pad = (n: number) => String(n).padStart(2, '0')
  * though each pipeline's per-row `Issue.message`/`field` below stays
  * specific ("Shift id is not a whole number.", field: 'shift_id').
  */
-export const idRule = createFieldRule<string, number>({
+const idRule = createFieldRule<string, number>({
   emits: [
     { code: 'INVALID_ID', field: 'staff_id / shift_id', severity: 'FATAL', describe: 'Id is not a whole number.' },
   ],
@@ -63,7 +63,7 @@ export const idRule = createFieldRule<string, number>({
  * the dash form's second field reaches 27, and both readings agree with the
  * monotonic shift_id ordering. See §2.2.
  */
-export const dateRule = createFieldRule<string, string>({
+const dateRule = createFieldRule<string, string>({
   emits: [
     { code: 'DATE_WHITESPACE', field: 'date', severity: 'REPAIR',
       describe: 'Trimmed surrounding whitespace from the date cell.' },
@@ -173,12 +173,12 @@ function makeTimeRule(field: 'start_time' | 'end_time') {
   })
 }
 
-export const startTimeRule = makeTimeRule('start_time')
-export const endTimeRule = makeTimeRule('end_time')
+const startTimeRule = makeTimeRule('start_time')
+const endTimeRule = makeTimeRule('end_time')
 
 const REQUIREMENT_PAIR = /^([a-z_]+)=(\d+)$/
 
-export const requirementsRule = createFieldRule<string, Record<Profession, number>>({
+const requirementsRule = createFieldRule<string, Record<Profession, number>>({
   emits: [
     { code: 'REQUIREMENTS_WHITESPACE', field: 'requirements', severity: 'REPAIR',
       describe: 'Trimmed surrounding whitespace from the requirements cell.' },

@@ -179,20 +179,70 @@ Pointing this at your own Supabase project, three things bite:
 
 ## Deployment
 
-Not currently deployed to a public URL. The Supabase database is migrated and
-seeded and the app runs against it; only the hosting step is outstanding.
+Merging to `main` deploys. Not directly — through the go-live gate in
+`.github/workflows/go-live.yml`, which is the only path to production.
 
-Set `CRON_SECRET` to any long random string. `vercel.json` schedules a nightly
-`POST /api/cron/prune`, which clears expired idempotency records; the route refuses to run
-without that secret rather than sitting open, so leaving it unset means the table grows.
-Locally or on another host, `npm run db:prune` does the same thing.
+Vercel's own Git integration is switched **off** for `main`
+(`vercel.json` → `git.deploymentEnabled.main: false`). Without that, Vercel would
+ship each commit the moment it landed and the gate would be grading something
+already live.
 
-To deploy on Vercel: set `APP_ENV=production`, `DATABASE_URL_PROD`,
-`SUPABASE_SERVICE_ROLE_KEY`, `APP_URL`, `CLINIC_TZ` and the two
-`NEXT_PUBLIC_SUPABASE_*` values, then run
-`npm run db:migrate && npm run db:seed` against the target once. Seeding happens
-at deploy time rather than on demand, so the data is present before the first
-request and there is no cold-start penalty on the paths that matter.
+The gate runs four stages, cheapest first, and stops at the first failure:
+
+| Stage | What it proves |
+|---|---|
+| **1 · verify** | Types, lint at `--max-warnings 0`, the full unit and integration suite, and a production build. |
+| **2 · acceptance** | The real app against a real Supabase and a real Chrome: migrate, seed from the same dirty CSVs production uses, then the whole Playwright suite, then the SLO budgets. |
+| **3 · deploy** | Applies migrations **before** the new code serves, then `vercel deploy --prod`. |
+| **4 · verify-live** | The SLOs again, against production — including that the running instance reports the commit this run built. |
+
+Stage 4 is the one that is easy to leave out and the one that catches the
+failure nobody expects: a green pipeline proves the artefact was good, not that
+it reached production.
+
+### Service level objectives
+
+`docs/SLO.md` defines four indicators — availability, latency, error rate and
+deploy integrity — with the budget for each and why it is that number. Check
+them against anything running:
+
+```bash
+BASE_URL=http://localhost:3100 npm run slo
+```
+
+`GET /api/health` is the availability probe. It runs a real `SELECT 1`, so it
+returns 503 when the database is unreachable rather than reporting a healthy
+Node process in front of a dead database. It is unauthenticated by design — the
+caller is a load balancer — and says only whether the service works and which
+build is answering.
+
+### Secrets the gate needs
+
+Repository → Settings → Secrets and variables → Actions:
+
+| Secret | Where to find it |
+|---|---|
+| `VERCEL_TOKEN` | Vercel → Account Settings → Tokens |
+| `VERCEL_ORG_ID` | `.vercel/project.json` after `vercel link` |
+| `VERCEL_PROJECT_ID` | same file |
+| `DATABASE_URL_PROD` | Supabase → Project Settings → Database → connection string |
+
+The deploy stage checks all four are present and fails with a message naming
+the missing one, rather than dying deep inside the Vercel CLI with something
+about linking a project.
+
+Vercel's own environment also needs `APP_ENV=production`, `DATABASE_URL_PROD`,
+`SUPABASE_SERVICE_ROLE_KEY`, `APP_URL`, `CLINIC_TZ`, `CRON_SECRET` and the two
+`NEXT_PUBLIC_SUPABASE_*` values.
+
+`CRON_SECRET` should be any long random string — `vercel.json` schedules a
+nightly `/api/cron/prune`, which clears expired idempotency records, drop
+notices and outbox events. The route refuses to run without that secret rather
+than sitting open, so leaving it unset means those tables grow unchecked.
+Locally, `npm run db:prune` does the same thing.
+
+Seed the target database once with `npm run db:seed`, so the data is present
+before the first request rather than being built on demand.
 
 ## Design
 
@@ -202,7 +252,8 @@ Opens with [Pencil](https://pencil.dev).
 
 ## Decisions
 
-`DECISIONS.md` covers the choices worth defending: what happens to claims when a
+`docs/REQUIREMENTS.md` states what the app has to do; `DECISIONS.md` covers the
+choices worth defending: what happens to claims when a
 shift is edited, how the date formats were decoded from evidence rather than
 guessed, why the shift merge key includes requirements, and the concurrency
 model — including the non-obvious fact that it is correct only under READ

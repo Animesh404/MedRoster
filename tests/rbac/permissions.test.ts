@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest'
-import { ALL_PERMISSIONS, ROLE_PERMISSIONS, can } from '@/lib/auth/permissions'
+import { ALL_PERMISSIONS, can } from '@/lib/auth/permissions'
 
 const manager = { id: 1, role: 'MANAGER' as const, profession: null }
 const staff   = { id: 2, role: 'STAFF' as const, profession: 'NURSE' as const }

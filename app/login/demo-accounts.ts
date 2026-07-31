@@ -4,7 +4,7 @@ export interface DemoAccount {
 }
 
 /**
- * Seeded accounts a reviewer can sign in as without leaving this page — the
+ * Seeded accounts anyone can sign in as without leaving this page — the
  * manager plus one staff member per profession. These are real rows produced
  * by `lib/seed/run-seed.ts` from the dirty CSVs (not placeholders), and
  * `lib/seed/auth-accounts.ts` gives each one an actual Supabase login (email

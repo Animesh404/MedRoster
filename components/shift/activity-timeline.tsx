@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils'
 
-export type ActivityKind = 'claimed' | 'assigned' | 'moved' | 'removed'
+type ActivityKind = 'claimed' | 'assigned' | 'moved' | 'removed'
 
 export interface ActivityItem {
   kind: ActivityKind

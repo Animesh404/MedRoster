@@ -9,4 +9,3 @@ export const createClaimSchema = z.object({
 
 export const claimResultSchema = z.object({ claimId: z.number().int() })
 
-export type CreateClaimBody = z.infer<typeof createClaimSchema>

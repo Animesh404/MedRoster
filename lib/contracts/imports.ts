@@ -28,7 +28,7 @@ export function findNulByteField(fields: Record<string, string>): string | null 
  *  bloat storage or the report view. Long, not malformed, so truncation
  *  (rather than rejection) is the right response.
  */
-export const MAX_FILENAME_LENGTH = 255
+const MAX_FILENAME_LENGTH = 255
 
 export function normalizeFilename(filename: string): string {
   return filename.length > MAX_FILENAME_LENGTH ? filename.slice(0, MAX_FILENAME_LENGTH) : filename
@@ -52,7 +52,7 @@ export const exactOutcomeCountsSchema = z.object({
   total: z.number().int(),
 })
 
-export const importIssueSchema = z.object({
+const importIssueSchema = z.object({
   code: z.string(),
   severity: z.enum(['REPAIR', 'FATAL']),
   message: z.string(),
@@ -69,5 +69,4 @@ export const importRowSchema = z.object({
   issues: z.array(importIssueSchema),
 })
 
-export type ImportKind = z.infer<typeof importKindSchema>
 export type ImportRowView = z.infer<typeof importRowSchema>

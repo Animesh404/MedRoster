@@ -46,7 +46,7 @@ export function mutationScope(
 
 // Written for the person holding the phone, like every other message in the
 // catalog — not for the engineer who chose the field name.
-export const MUTATION_SCOPE_MISMATCH =
+const MUTATION_SCOPE_MISMATCH =
   'That action could not be repeated. Please refresh and try again.'
 
 /**

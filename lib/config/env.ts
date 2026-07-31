@@ -1,14 +1,5 @@
 import { z } from 'zod'
-import {
-  ConfigError,
-  describeDatabaseTarget,
-  redactDatabaseUrl,
-  resolveDatabase,
-  type AppEnv,
-} from './database-url'
-
-export { ConfigError, describeDatabaseTarget, redactDatabaseUrl, resolveDatabase }
-export type { AppEnv }
+import { ConfigError, resolveDatabase, type AppEnv } from './database-url'
 
 /**
  * Validated configuration, in one place.
@@ -155,16 +146,3 @@ export function getClientEnv(): ClientEnv {
   }
 }
 
-/**
- * One line at boot naming which database is in use and where the choice came
- * from. Cheap insurance against the failure this config exists to prevent:
- * believing you are on local data when you are not.
- */
-export function describeBootConfig(): string {
-  const env = getServerEnv()
-  const target = describeDatabaseTarget(env.databaseUrl)
-  return (
-    `MedRoster · APP_ENV=${env.appEnv} · db=${target} (via ${env.databaseSource}) ` +
-    `· ${redactDatabaseUrl(env.databaseUrl)}`
-  )
-}

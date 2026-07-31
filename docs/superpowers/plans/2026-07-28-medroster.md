@@ -6574,7 +6574,7 @@ to `POST /api/imports`, plus the paginated run history linking to each report.
 (accepted / repaired / merged / rejected), outcome filter tabs, and a paginated
 table where each row shows the **raw source line** in monospace, its outcome chip,
 and every issue as `message` with `before → after` when present. This is the
-brief's explicit deliverable: for every rejected or merged row, the row, what was
+a stated requirement (§4): for every rejected or merged row, the row, what was
 wrong, and what was done.
 
 Wire `useRealtimeWeek` into the dashboard and shift detail pages, with `onResync`
@@ -6726,7 +6726,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 | §8.4 Skeletons | 17 |
 | §9 Recurring shifts | 12 (`occurrenceDates` + series), 19 (form) |
 | §10 Testing | throughout; suite complete at 20 |
-| §11 Deliverables | 20 |
+| §11 What ships | 20 |
 
 No spec section is unimplemented.
 

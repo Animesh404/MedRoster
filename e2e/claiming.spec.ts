@@ -28,16 +28,27 @@ test.describe('optimistic claiming', () => {
     const claimButton = page.getByRole('button', { name: 'Claim shift' })
     await expect(claimButton).toBeVisible()
 
-    // Slow the claim request down so the pre-network-settle flip is actually
-    // observable rather than racing a fast localhost round trip.
+    // Hold the claim request open until this test says so. The earlier version
+    // delayed it 800ms and asserted the flip inside a 300ms budget, which made
+    // the test a race between React rendering and a wall clock — it passed on a
+    // fast laptop and was one slow CI agent away from failing for no reason.
+    //
+    // Holding the request instead makes "before the network settles" a
+    // STRUCTURAL fact rather than a timing measurement: the assertion below
+    // cannot pass unless the button flipped while the request was still in
+    // flight, because nothing has released it yet.
+    let settleRequest: () => void = () => {}
+    const held = new Promise<void>((resolve) => { settleRequest = resolve })
     await page.route('**/api/shifts/*/claims', async (route) => {
-      await new Promise((r) => setTimeout(r, 800))
+      await held
       await route.continue()
     })
 
     await claimButton.click()
-    // Flips to "Release shift" BEFORE the artificially delayed request settles.
-    await expect(page.getByRole('button', { name: 'Release shift' })).toBeVisible({ timeout: 300 })
+    // Flips to "Release shift" while the request is STILL unsettled.
+    await expect(page.getByRole('button', { name: 'Release shift' })).toBeVisible()
+
+    settleRequest()
 
     // Let the real request land, then confirm it stuck (not a rollback).
     await expect(page.getByRole('button', { name: 'Release shift' })).toBeVisible({ timeout: 2_000 })

@@ -14,7 +14,6 @@ async function tabThrough(page: import('@playwright/test').Page, count: number):
   const snapshots: FocusSnapshot[] = []
   for (let i = 0; i < count; i++) {
     await page.keyboard.press('Tab')
-    // eslint-disable-next-line no-await-in-loop
     const snapshot = await page.evaluate(() => {
       const el = document.activeElement as HTMLElement | null
       if (!el || el === document.body) return null

@@ -8,9 +8,9 @@
 
 export type AppEnv = 'development' | 'production'
 
-export const APP_ENVS: readonly AppEnv[] = ['development', 'production']
+const APP_ENVS: readonly AppEnv[] = ['development', 'production']
 
-export function isAppEnv(value: string | undefined): value is AppEnv {
+function isAppEnv(value: string | undefined): value is AppEnv {
   return value === 'development' || value === 'production'
 }
 
