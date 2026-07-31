@@ -13,10 +13,13 @@ import { MUTATION_RETENTION_MS, pruneMutationOutcomes } from '@/lib/rules/retent
  * deployment that is not on Vercel and needs its own cron to call something.
  */
 async function main(): Promise<void> {
-  const hours = Math.round(MUTATION_RETENTION_MS / 3_600_000)
-  const { deleted, exhausted } = await pruneMutationOutcomes(prisma)
-  console.log(`pruned ${deleted} mutation outcome(s) older than ${hours}h`)
-  if (exhausted) {
+  const outcomeHours = Math.round(MUTATION_RETENTION_MS / 3_600_000)
+
+  // EventOutbox is not pruned — see the note in app/api/cron/prune/route.ts.
+  const outcomes = await pruneMutationOutcomes(prisma)
+  console.log(`pruned ${outcomes.deleted} mutation outcome(s) older than ${outcomeHours}h`)
+
+  if (outcomes.exhausted) {
     console.warn('hit the batch ceiling — run again, a backlog remains')
   }
 }

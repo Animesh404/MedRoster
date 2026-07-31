@@ -112,13 +112,25 @@ export function useRealtimeWeek(
       const res = await fetch(
         `/api/events/since?topic=${encodeURIComponent(topic)}&id=${lastIdRef.current}`)
       if (!res.ok || cancelled) return
-      const body = await res.json() as { events: OutboxEvent[]; lastId: string; truncated: boolean }
+      const body = await res.json() as {
+        events: OutboxEvent[]; lastId: string; truncated: boolean; cursorLost?: boolean
+      }
       const isSeeding = firstCatchUp
       firstCatchUp = false
 
-      if (body.truncated) {
-        // Too far behind to reconcile event-by-event; refetch rather than diverge.
+      // `cursorLost` means the events this cursor points at have been PRUNED —
+      // they cannot be replayed at any page size, so paging forward would
+      // silently skip them. `truncated` means merely "too many to send at
+      // once". Different causes, same remedy: stop reconciling event-by-event
+      // and refetch server state.
+      //
+      // `cursorLost` is optional so a client running against an older deploy
+      // (or a cached bundle mid-rollout) simply behaves as it did before,
+      // rather than crashing on a field it does not know about.
+      if (body.cursorLost === true || body.truncated) {
         lastIdRef.current = body.lastId
+        // Seeding already renders fresh server state, so a resync would be a
+        // redundant refetch on every mount once anything has ever been pruned.
         if (!isSeeding) handlersRef.current.onResync()
         return
       }

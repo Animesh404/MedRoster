@@ -4,7 +4,25 @@ import { withCronAuth } from '@/lib/auth/with-cron-auth'
 import { pruneMutationOutcomes } from '@/lib/rules/retention'
 
 async function prune(): Promise<Response> {
-  const { deleted, exhausted } = await pruneMutationOutcomes(prisma)
+  const outcomes = await pruneMutationOutcomes(prisma)
+
+  // `pruneEventOutbox` is deliberately NOT called here, and the reason is not
+  // that it is unfinished — it works, and the lost-cursor signal that makes it
+  // safe for polling clients is live.
+  //
+  // EventOutbox is not only a replay log. It is the SOLE store behind
+  // /my-shifts' drop notices — which that page's own comment calls "the one
+  // thing a staff member cannot be left to discover only by noticing a shift
+  // missing on the day" — and behind the shift-detail activity timeline.
+  // Deleting a row there deletes a notice a nurse may not have seen yet: a
+  // shift four weeks out, dropped today, would lose its banner while the shift
+  // is still ahead of them, and somebody who does not log in for a week would
+  // never learn at all.
+  //
+  // That needs those notices to have a durable home of their own before any
+  // event is deleted. See docs/KNOWN_ISSUES.md.
+  const deleted = outcomes.deleted
+  const exhausted = outcomes.exhausted
 
   // `exhausted` is the only interesting thing this job has to say: it means the
   // run hit its batch ceiling with work still left, i.e. the table is growing
@@ -12,12 +30,15 @@ async function prune(): Promise<Response> {
   // — "10,000 deleted" reads identically whether that drained the backlog or
   // merely dented it.
   if (exhausted) {
-    console.warn(`cron/prune: hit the batch ceiling after ${deleted} rows — backlog remains`)
+    console.warn(
+      `cron/prune: hit the batch ceiling after ${deleted} rows — backlog remains ` +
+      `(mutation outcomes)`,
+    )
   } else {
-    console.info(`cron/prune: deleted ${deleted} expired mutation outcomes`)
+    console.info(`cron/prune: deleted ${outcomes.deleted} expired mutation outcomes`)
   }
 
-  return NextResponse.json({ deleted, exhausted })
+  return NextResponse.json({ deleted, exhausted, mutationOutcomes: outcomes.deleted })
 }
 
 /**
