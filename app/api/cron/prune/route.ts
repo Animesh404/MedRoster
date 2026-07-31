@@ -1,44 +1,39 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db/client'
+import { withCronAuth } from '@/lib/auth/with-cron-auth'
 import { pruneMutationOutcomes } from '@/lib/rules/retention'
+
+async function prune(): Promise<Response> {
+  const { deleted, exhausted } = await pruneMutationOutcomes(prisma)
+
+  // `exhausted` is the only interesting thing this job has to say: it means the
+  // run hit its batch ceiling with work still left, i.e. the table is growing
+  // faster than one nightly run can clear it. A bare count cannot express that
+  // — "10,000 deleted" reads identically whether that drained the backlog or
+  // merely dented it.
+  if (exhausted) {
+    console.warn(`cron/prune: hit the batch ceiling after ${deleted} rows — backlog remains`)
+  } else {
+    console.info(`cron/prune: deleted ${deleted} expired mutation outcomes`)
+  }
+
+  return NextResponse.json({ deleted, exhausted })
+}
 
 /**
  * Scheduled cleanup of expired idempotency records.
  *
- * NOT wrapped in `withAuth`, and deliberately so: there is no MedRoster session
- * behind a cron invocation. `tests/rbac/routes.test.ts` therefore has an
- * explicit exemption for this path — see the note there. The guard is the
- * shared secret below instead.
+ * **GET, because that is what Vercel Cron actually sends.** Its schema has no
+ * method field: a scheduled invocation is always an HTTP GET to the configured
+ * path. An earlier version of this route exported only POST, which would have
+ * 405'd every night — with green tests, a working `npm run db:prune`, and the
+ * table growing exactly as if the job did not exist. POST is kept as an alias
+ * so a human can trigger it by hand with curl.
  *
- * Vercel Cron sends `Authorization: Bearer $CRON_SECRET` on scheduled
- * invocations. Without the secret set, the route refuses everything rather than
- * running open: a cleanup endpoint anyone can trigger is a small denial-of-
- * service lever, and the failure mode of refusing is a table that grows, which
- * is visible and recoverable.
+ * Not `withAuth`: there is no MedRoster session behind a cron call.
+ * `tests/rbac/routes.test.ts` carries an explicit exemption, and asserts this
+ * file's handlers carry `WITH_CRON_BRAND` instead — a runtime check on the
+ * exported function, not a grep for a secret's name.
  */
-export async function POST(req: Request) {
-  const secret = process.env.CRON_SECRET
-  if (!secret) {
-    console.warn('cron/prune: CRON_SECRET is not set — refusing to run')
-    return NextResponse.json(
-      { error: { code: 'FORBIDDEN', message: 'Scheduled tasks are not configured.' } },
-      { status: 403 },
-    )
-  }
-
-  if (req.headers.get('authorization') !== `Bearer ${secret}`) {
-    return NextResponse.json(
-      { error: { code: 'FORBIDDEN', message: 'Not authorised.' } },
-      { status: 403 },
-    )
-  }
-
-  const deleted = await pruneMutationOutcomes(prisma)
-
-  // Logged, not silent: a count that keeps arriving at the batch ceiling means
-  // the table is growing faster than one run can clear it, which is the only
-  // interesting thing this job has to say.
-  console.info(`cron/prune: deleted ${deleted} expired mutation outcomes`)
-
-  return NextResponse.json({ deleted })
-}
+export const GET = withCronAuth(prune)
+export const POST = withCronAuth(prune)

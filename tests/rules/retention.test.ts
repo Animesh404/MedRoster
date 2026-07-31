@@ -27,7 +27,7 @@ describe('pruneMutationOutcomes', () => {
     const db = await getTestDb()
     await seedOutcome('ancient', MUTATION_RETENTION_MS + HOUR)
 
-    const deleted = await pruneMutationOutcomes(db, { now: NOW })
+    const { deleted } = await pruneMutationOutcomes(db, { now: NOW })
 
     expect(deleted).toBe(1)
     expect(await db.mutationOutcome.count()).toBe(0)
@@ -42,7 +42,7 @@ describe('pruneMutationOutcomes', () => {
     await seedOutcome('fresh', 1000)
     await seedOutcome('just-inside', MUTATION_RETENTION_MS - 1000)
 
-    const deleted = await pruneMutationOutcomes(db, { now: NOW })
+    const { deleted } = await pruneMutationOutcomes(db, { now: NOW })
 
     expect(deleted).toBe(0)
     expect(await db.mutationOutcome.count()).toBe(2)
@@ -54,7 +54,7 @@ describe('pruneMutationOutcomes', () => {
     await seedOutcome('old-2', MUTATION_RETENTION_MS + 5 * HOUR)
     await seedOutcome('recent', HOUR)
 
-    const deleted = await pruneMutationOutcomes(db, { now: NOW })
+    const { deleted } = await pruneMutationOutcomes(db, { now: NOW })
 
     expect(deleted).toBe(2)
     const survivors = await db.mutationOutcome.findMany()
@@ -63,7 +63,7 @@ describe('pruneMutationOutcomes', () => {
 
   it('is a no-op on an empty table', async () => {
     const db = await getTestDb()
-    expect(await pruneMutationOutcomes(db, { now: NOW })).toBe(0)
+    expect(await pruneMutationOutcomes(db, { now: NOW })).toEqual({ deleted: 0, exhausted: false })
   })
 
   // A backlog must not become one enormous DELETE holding a transaction open.
@@ -80,7 +80,7 @@ describe('pruneMutationOutcomes', () => {
       })),
     })
 
-    const deleted = await pruneMutationOutcomes(db, { now: NOW, batchSize: 100 })
+    const { deleted } = await pruneMutationOutcomes(db, { now: NOW, batchSize: 100 })
 
     expect(deleted).toBe(250)
     expect(await db.mutationOutcome.count()).toBe(0)
@@ -97,7 +97,8 @@ describe('pruneMutationOutcomes', () => {
       })),
     })
 
-    const deleted = await pruneMutationOutcomes(db, { now: NOW, batchSize: 10, maxBatches: 2 })
+    const { deleted, exhausted } = await pruneMutationOutcomes(db, { now: NOW, batchSize: 10, maxBatches: 2 })
+    expect(exhausted, 'stopping at the ceiling with work left must be reported').toBe(true)
 
     // Two batches of ten, then it yields rather than grinding through the rest.
     expect(deleted).toBe(20)
@@ -120,7 +121,7 @@ describe('pruneMutationOutcomes', () => {
       },
     })
 
-    const deleted = await pruneMutationOutcomes(db, { now: NOW })
+    const { deleted } = await pruneMutationOutcomes(db, { now: NOW })
 
     expect(deleted).toBe(1)
     expect(await db.mutationOutcome.findUnique({ where: { mutationId: 'in-flight' } })).not.toBeNull()
