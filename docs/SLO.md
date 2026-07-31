@@ -93,6 +93,30 @@ and a latency check that fails on a busy runner teaches people to re-run it
 until it goes green, which is worse than not having one. They are still tight
 enough to catch a tenfold regression, which is the failure worth stopping.
 
+## Function and database must share a region
+
+The first production SLO run **failed** — health p95 648 ms against a 500 ms
+budget — and the diagnosis is worth keeping, because the budget was right and
+the deployment was wrong.
+
+The request path was: user → Mumbai edge (`bom1`) → **function in Washington
+(`iad1`)** → **database in Tokyo (`ap-northeast-1`)**. `checkedInMs`, the
+server-side timing of a single `SELECT 1`, sat at a steady 150 ms — that is one
+Washington–Tokyo round trip, paid by every query on every page, several times
+over on a page like the dashboard.
+
+`vercel.json` now pins `regions: ["hnd1"]`, colocating the function with the
+database. `checkedInMs` fell from 150 ms to **6 ms** and health p95 from 648 ms
+to 270 ms.
+
+The general rule: **pin the function region to the database's**. Users pay one
+extra hop to reach a further edge; a mislocated function pays a transcontinental
+hop per query. If the database ever moves, this setting moves with it.
+
+This is what an SLO is for. The tempting fix was to raise the budget until it
+went green, which would have shipped a deployment three times slower than it
+needed to be and called it healthy.
+
 ## Running the checks
 
 ```bash
