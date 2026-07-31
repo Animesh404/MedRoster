@@ -12,6 +12,17 @@ vi.mock('@/app/(app)/actions', () => ({
   signOutAction: vi.fn(),
 }))
 
+// AppShell also renders <ThemeToggle>, which calls `useRouter()` to refresh
+// server components after a theme change. Without a router in the tree that
+// throws "invariant expected app router to be mounted" — a failure about
+// routing, in a file that only cares about which nav items each role sees.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: vi.fn(), replace: vi.fn(), refresh: vi.fn(),
+    back: vi.fn(), forward: vi.fn(), prefetch: vi.fn(),
+  }),
+}))
+
 const { AppShell } = await import('@/components/app-shell')
 
 const MANAGER: Principal = { id: 1, role: 'MANAGER', profession: null }
@@ -20,7 +31,7 @@ const STAFF: Principal = { id: 2, role: 'STAFF', profession: 'NURSE' }
 describe('AppShell nav', () => {
   it('never shows a staff member the manager-only controls', () => {
     render(
-      <AppShell principal={STAFF} name="Ivy Bell" email="ivy.bell@clinicmail.test">
+      <AppShell principal={STAFF} name="Ivy Bell" email="ivy.bell@clinicmail.test" theme="system">
         <p>content</p>
       </AppShell>,
     )
@@ -31,7 +42,7 @@ describe('AppShell nav', () => {
 
   it('shows a manager every nav item, including the ones staff never see', () => {
     render(
-      <AppShell principal={MANAGER} name="Dana Okonkwo" email="manager@clinicmail.test">
+      <AppShell principal={MANAGER} name="Dana Okonkwo" email="manager@clinicmail.test" theme="system">
         <p>content</p>
       </AppShell>,
     )
@@ -46,7 +57,7 @@ describe('nav applicability', () => {
     // through to a page that can never have content and told them to claim a
     // shift — the one action validateAssignment refuses them.
     render(
-      <AppShell principal={MANAGER} name="Dana Okonkwo" email="manager@clinicmail.test">
+      <AppShell principal={MANAGER} name="Dana Okonkwo" email="manager@clinicmail.test" theme="system">
         <p>content</p>
       </AppShell>,
     )
@@ -56,7 +67,7 @@ describe('nav applicability', () => {
 
   it('shows My shifts to clinical staff', () => {
     render(
-      <AppShell principal={STAFF} name="Zainab Volkov" email="zainab.volkov@clinicmail.test">
+      <AppShell principal={STAFF} name="Zainab Volkov" email="zainab.volkov@clinicmail.test" theme="system">
         <p>content</p>
       </AppShell>,
     )

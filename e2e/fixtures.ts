@@ -112,7 +112,13 @@ export function staffingSection(page: Page) {
 }
 
 export async function logout(page: Page): Promise<void> {
-  await page.locator('[data-slot="dropdown-menu-trigger"]').click()
+  // Scoped by accessible name, not by `[data-slot="dropdown-menu-trigger"]`.
+  // The app chrome now carries TWO dropdown triggers — the account menu and the
+  // theme toggle — and the bare slot selector matched both, failing Playwright's
+  // strict mode with an error about the theme toggle in a test about signing
+  // out. This repo has no data-testid convention, and the account menu already
+  // announces itself with the member's name and role, so that is what to use.
+  await page.getByRole('button', { name: /Manager|Nurse|Doctor|Receptionist/i }).first().click()
   await page.getByRole('menuitem', { name: 'Sign out' }).click()
   await page.waitForURL('/login')
 }

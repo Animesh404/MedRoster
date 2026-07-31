@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Bricolage_Grotesque, IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import { Toaster } from "@/components/ui/sonner";
+import { currentTheme } from "@/lib/theme/server";
 import "./globals.css";
 
 // Display face — hero and section heads only (§app/globals.css). Variable
@@ -31,14 +32,21 @@ export const metadata: Metadata = {
   description: "Clinic staff shift scheduling",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Read on the server so the very first byte carries the right theme. The
+  // usual alternative — a blocking inline script that reads localStorage before
+  // paint — exists only because the server cannot see localStorage; a cookie it
+  // can see removes the need for the script entirely.
+  const theme = await currentTheme();
+
   return (
     <html
       lang="en"
+      data-theme={theme}
       className={`${bricolage.variable} ${plexSans.variable} ${plexMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col font-sans">

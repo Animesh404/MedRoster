@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { redirect } from 'next/navigation'
 import { AppShell } from '@/components/app-shell'
 import { currentSessionUser } from '@/lib/auth/session'
+import { currentTheme } from '@/lib/theme/server'
 
 /**
  * Wraps every guarded route (`/dashboard`, `/my-shifts`, `/shifts/*`,
@@ -17,7 +18,12 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AppShell principal={session.principal} name={session.name} email={session.email}>
+    <AppShell
+      principal={session.principal}
+      name={session.name}
+      email={session.email}
+      theme={await currentTheme()}
+    >
       {children}
     </AppShell>
   )

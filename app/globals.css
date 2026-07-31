@@ -18,11 +18,41 @@
  *             of 07:30-15:30 has to align down a week grid.
  * The font families themselves are wired in app/layout.tsx via next/font.
  *
- * Dark mode follows the OS (`prefers-color-scheme`) only — there is no manual
- * toggle, so Tailwind's `dark:` variant is left at its v4 default (a media
- * query) rather than the class-based variant shadcn's installer normally
- * wires up for a next-themes toggle we don't have.
+ * Dark mode is a THREE-state preference — light, dark, or follow the OS —
+ * carried on `<html data-theme>`. The server writes that attribute from a
+ * cookie before the page is sent, so the first paint is already correct and
+ * there is no flash to patch over with a blocking script.
+ *
+ * `system` is a real stored value, not the absence of one. It has to be, or
+ * "follow my OS" would be indistinguishable from "never chose", and somebody
+ * who deliberately went back to following their OS would be silently
+ * re-pinned by the next thing that wrote a default.
+ *
+ * Both the `dark:` variant below and the token overrides have to agree about
+ * all three states, which is why the same three-part selector appears twice.
+ * Change one and you must change the other: a mismatch means Tailwind's
+ * `dark:` utilities apply while the CSS variables underneath them do not, and
+ * the result is dark text on a dark background rather than an obvious break.
  */
+
+/*
+ * Tailwind v4 defaults `dark:` to a media query. Point it at the attribute
+ * instead, covering explicit dark AND system-following-a-dark-OS.
+ */
+@custom-variant dark {
+  &:where([data-theme='dark'], [data-theme='dark'] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where([data-theme='system'], [data-theme='system'] *) {
+      @slot;
+    }
+    /* No attribute at all — JS disabled, or markup this app did not render. */
+    &:where(html:not([data-theme]), html:not([data-theme]) *) {
+      @slot;
+    }
+  }
+}
 
 :root {
   --brand-primary: #0d9488;
@@ -62,8 +92,22 @@
   --radius: 0.625rem;
 }
 
+/*
+ * Dark tokens, declared once and applied to every state that means "dark".
+ * Kept in lockstep with the `dark:` variant above.
+ */
+:root[data-theme='dark'] {
+  --background: #05201d;
+  --foreground: #e6fffa;
+  --muted: #8aa8a3;
+  --card: #0a2b27;
+  --border: #14453f;
+  --surface-tint: #0a2b27;
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root[data-theme='system'],
+  :root:not([data-theme]) {
     --background: #05201d;
     --foreground: #e6fffa;
     --muted: #8aa8a3;

@@ -47,6 +47,11 @@ model User {
   /// Set when a manager offboards someone. The Supabase user is banned at the
   /// same time; future claims are released. See DECISIONS.md.
   deactivatedAt DateTime?   @db.Timestamptz(3)
+  /// "light" | "dark" | "system". Stored so the choice follows somebody to a
+  /// new device rather than living only in that browser's cookie. NULL means
+  /// never chosen, which reads as "system" — the behaviour everyone had before
+  /// the toggle existed.
+  themePreference String?   @db.VarChar(16)
   createdAt     DateTime    @default(now()) @db.Timestamptz(3)
 
   claims        Claim[]     @relation("ClaimHolder")
