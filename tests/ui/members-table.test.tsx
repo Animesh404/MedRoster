@@ -145,3 +145,66 @@ describe('MembersTable', () => {
     expect(await screen.findByRole('alert')).toBeInTheDocument()
   })
 })
+
+/**
+ * Deactivation was a one-way door: a deactivated row rendered no action
+ * buttons at all, so a misclick removed somebody permanently with no path back
+ * short of editing the database.
+ */
+describe('MembersTable reactivation', () => {
+  const WITH_DEACTIVATED = [
+    ...MEMBERS,
+    {
+      id: 4, name: 'Gone Away', email: 'gone@c.test', role: 'STAFF' as const,
+      profession: 'NURSE' as const, status: 'deactivated' as const,
+    },
+  ]
+
+  it('offers Reactivate on a deactivated row, and only there', () => {
+    render(<MembersTable initialMembers={WITH_DEACTIVATED} currentUserId={1} />)
+
+    const gone = screen.getByText('Gone Away').closest('tr')!
+    expect(within(gone).getByRole('button', { name: /reactivate/i })).toBeInTheDocument()
+
+    const active = screen.getByText('Dana Okonkwo').closest('tr')!
+    expect(within(active).queryByRole('button', { name: /reactivate/i })).toBeNull()
+  })
+
+  it('does not offer Deactivate on an already-deactivated row', () => {
+    render(<MembersTable initialMembers={WITH_DEACTIVATED} currentUserId={1} />)
+
+    const gone = screen.getByText('Gone Away').closest('tr')!
+    expect(within(gone).queryByRole('button', { name: /^deactivate$/i })).toBeNull()
+  })
+
+  it('posts to the reactivate endpoint', async () => {
+    const user = userEvent.setup()
+    render(<MembersTable initialMembers={WITH_DEACTIVATED} currentUserId={1} />)
+
+    const gone = screen.getByText('Gone Away').closest('tr')!
+    await user.click(within(gone).getByRole('button', { name: /reactivate/i }))
+
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/members/4/reactivate',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
+  it('surfaces a failure inline rather than silently doing nothing', async () => {
+    vi.stubGlobal('fetch', vi.fn((url: string) =>
+      typeof url === 'string' && url.endsWith('/reactivate')
+        ? Promise.resolve(new Response(
+            JSON.stringify({ error: { code: 'INVALID_INPUT', message: 'Could not restore that account’s access.' } }),
+            { status: 400 },
+          ))
+        : Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })),
+    ))
+    const user = userEvent.setup()
+    render(<MembersTable initialMembers={WITH_DEACTIVATED} currentUserId={1} />)
+
+    const gone = screen.getByText('Gone Away').closest('tr')!
+    await user.click(within(gone).getByRole('button', { name: /reactivate/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not restore/i)
+  })
+})
