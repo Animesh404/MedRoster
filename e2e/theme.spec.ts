@@ -136,7 +136,18 @@ test.describe('theme preference, signed in', () => {
     await login(page, NURSE_EMAIL, PASSWORD)
 
     await page.getByRole('button', { name: /theme/i }).click()
+    // WAIT for the save, do not assume it. The toggle persists with an
+    // unawaited `fetch` on purpose — nobody should watch a spinner to change a
+    // colour scheme — so clearing cookies straight after the click can cancel
+    // the request or strip its session before it lands. That is precisely what
+    // happened on CI while passing locally: the assertion below is about the
+    // STORED preference, so the test has to know it was stored.
+    const saved = page.waitForResponse(
+      (r) => r.url().includes('/api/me/theme') && r.request().method() === 'PATCH',
+    )
     await page.getByRole('menuitem', { name: 'Dark' }).click()
+    expect((await saved).status()).toBe(200)
+
     await expect
       .poll(() => page.evaluate(() => document.documentElement.getAttribute('data-theme')))
       .toBe('dark')
