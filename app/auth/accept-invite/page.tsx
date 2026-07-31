@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { inviteDestination } from '@/app/auth/invite-branch'
+import { HashSessionBridge } from '@/app/auth/hash-session-bridge'
 import { SetPasswordForm } from '@/app/auth/set-password-form'
 import { createSupabaseServerClient } from '@/lib/supabase/server'
 
@@ -22,11 +23,16 @@ export default async function AcceptInvitePage() {
         <Link href="/" className="font-display text-lg font-semibold text-brand-deep dark:text-brand-mid">
           MedRoster
         </Link>
+        {/* Runs on the client before the branch below is trustworthy: with
+            Supabase's default templates the session arrives in the URL
+            fragment, which this server render cannot see. */}
+        <HashSessionBridge />
         {!data.user ? (
-          // No session means the link was never exchanged, or it expired
-          // before it was clicked. /auth/confirm redirects failures to
-          // /login with a reason, so reaching here without a user means
-          // someone opened this URL directly — nothing to recover.
+          // No session AND no fragment for the bridge to spend. Either the
+          // link expired, or somebody opened this URL directly. The bridge
+          // calls `router.refresh()` after a successful exchange, so a
+          // fragment-carrying visit re-renders into the branch below rather
+          // than sitting on this message.
           <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
             This invite link is no longer valid. Ask a manager to resend it.
           </p>

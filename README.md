@@ -247,8 +247,12 @@ Tokens. The `service_role` key cannot change project settings.
 
 Still manual, because neither is a setting this app can decide for you:
 
-- **SMTP.** Supabase's built-in sender only delivers to project members and is
-  rate-limited to a handful per hour. Inviting real staff needs your own SMTP.
+- **SMTP.** Not configured, deliberately — see `DECISIONS.md`. The built-in
+  sender only delivers to addresses on the Supabase team and caps near 2–3/hour,
+  so invites to real staff will not arrive. It also blocks custom email
+  templates entirely, which is why emailed links are handled client-side via
+  `app/auth/hash-session-bridge.tsx` rather than server-side by `/auth/confirm`.
+  Configuring SMTP lifts both at once.
 - **Google sign-in — deferred, see `DECISIONS.md`.** Sign-in is password and magic
   link only. The login form has no Google button: the provider was never enabled, so
   the one that used to be there returned a 400 to anyone who clicked it. The OAuth

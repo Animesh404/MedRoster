@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
+import { HashSessionBridge } from '@/app/auth/hash-session-bridge'
 import { SetPasswordForm } from '@/app/auth/set-password-form'
 import { createSupabaseServerClient } from '@/lib/supabase/server'
 
@@ -8,10 +9,11 @@ export const metadata: Metadata = {
 }
 
 export default async function ResetPasswordPage() {
-  // Same mechanism as accept-invite: the recovery email template points at
-  // /auth/confirm with type=recovery, which exchanges the token hash and
-  // sets the session cookie before redirecting here. This page never parses
-  // a token itself.
+  // Two ways a session can be here, and both are supported on purpose:
+  // a `{{ .TokenHash }}` template exchanged server-side by /auth/confirm, or —
+  // on a project that cannot install custom templates — Supabase's default
+  // template, which lands the tokens in the URL fragment for HashSessionBridge
+  // below to spend. This render sees only the former.
   const supabase = await createSupabaseServerClient()
   const { data } = await supabase.auth.getUser()
 
@@ -21,6 +23,10 @@ export default async function ResetPasswordPage() {
         <Link href="/" className="font-display text-lg font-semibold text-brand-deep dark:text-brand-mid">
           MedRoster
         </Link>
+        {/* Runs on the client before the branch below is trustworthy: with
+            Supabase's default templates the session arrives in the URL
+            fragment, which this server render cannot see. */}
+        <HashSessionBridge />
         {!data.user ? (
           // No session means the link was never exchanged, already used, or
           // someone opened this URL directly. /auth/confirm redirects its

@@ -1,5 +1,22 @@
 import type { Metadata } from 'next'
+/*
+ * Images are imported, not referenced by path string.
+ *
+ * A string `src` gives Next nothing at build time, so the browser sees a blank
+ * box until the optimised file arrives and then a pop as it lands. Importing
+ * the file means Next reads it during the build and can hand the component two
+ * things it cannot otherwise have: the real dimensions, and a tiny inline blur
+ * that ships INSIDE the HTML — so the space is filled in the same paint as the
+ * text around it, with no network wait at all.
+ *
+ * Measured on production before this change: the optimiser itself was never the
+ * problem, serving the hero in ~117ms at 40KB against 443KB for the raw file.
+ * What was missing was anything to look at during those 117ms.
+ */
 import Image from 'next/image'
+import heroClinicTeam from '@/assets/images/hero-clinic-team.jpg'
+import featureConsultation from '@/assets/images/feature-consultation.jpg'
+import featureAdmin from '@/assets/images/feature-admin.jpg'
 import Link from 'next/link'
 import { FileSpreadsheet, Lock, ShieldCheck, Smartphone } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -108,7 +125,8 @@ export default async function MarketingPage() {
       {/* Hero */}
       <section className="hero-gradient relative overflow-hidden px-4 pt-10 pb-28 text-white sm:px-6 sm:pt-16 sm:pb-36">
         <Image
-          src="/images/hero-clinic-team.jpg"
+          src={heroClinicTeam}
+          placeholder="blur"
           alt=""
           fill
           priority
@@ -182,7 +200,8 @@ export default async function MarketingPage() {
         <div className="grid items-center gap-10 md:grid-cols-2">
           <div className="relative aspect-[4/3] overflow-hidden rounded-card">
             <Image
-              src="/images/feature-consultation.jpg"
+              src={featureConsultation}
+          placeholder="blur"
               alt="A physician reviewing a patient's chart together in a clinic office"
               fill
               sizes="(min-width: 768px) 40vw, 100vw"
@@ -229,7 +248,8 @@ export default async function MarketingPage() {
           </div>
           <div className="relative aspect-[4/3] overflow-hidden rounded-card md:order-1">
             <Image
-              src="/images/feature-admin.jpg"
+              src={featureAdmin}
+          placeholder="blur"
               alt="A member of clinic staff working through a schedule at a laptop"
               fill
               sizes="(min-width: 768px) 40vw, 100vw"
@@ -256,7 +276,8 @@ export default async function MarketingPage() {
       <section className="relative mx-auto mt-20 w-full max-w-5xl overflow-hidden rounded-card px-4 sm:px-6">
         <div className="relative isolate overflow-hidden rounded-card px-6 py-16 text-center text-white sm:px-12">
           <Image
-            src="/images/hero-clinic-team.jpg"
+            src={heroClinicTeam}
+          placeholder="blur"
             alt=""
             fill
             sizes="(min-width: 1024px) 1024px, 100vw"
@@ -358,9 +379,23 @@ function Footer() {
           Sign in
         </Link>
       </div>
+      {/*
+        * Decorative wordmark, sized to FIT rather than to a breakpoint.
+        *
+        * It was `text-[18vw] sm:text-[12rem]`, and both halves clipped. These
+        * nine glyphs need roughly 6.2x the font size in width, so 18vw
+        * overflowed a phone by ~45px, and the fixed 12rem — which takes effect
+        * from 640px up — overflowed a 768px tablet by 418px. `overflow-hidden`
+        * on the footer meant none of that showed as page-level scroll; it just
+        * quietly shaved both ends off a centred word.
+        *
+        * 15vw stays under the viewport at every width, and the 14rem cap stops
+        * it running to 384px on an ultrawide. Verified by measuring computed
+        * font size and scrollWidth from 320px to 2560px, not by eye.
+        */}
       <p
         aria-hidden
-        className="pointer-events-none -mb-8 text-center font-display text-[18vw] leading-none font-bold text-foreground/5 select-none sm:text-[12rem]"
+        className="pointer-events-none -mb-8 text-center font-display text-[min(15vw,14rem)] leading-none font-bold text-foreground/5 select-none"
       >
         MEDROSTER
       </p>
