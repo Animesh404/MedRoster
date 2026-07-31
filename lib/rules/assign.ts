@@ -3,6 +3,9 @@ import { createAppError, type AppError } from '@/lib/domain/errors'
 import { emitEvent } from '@/lib/events/outbox'
 import { weekTopic } from '@/lib/events/topics'
 import { withOrderedLocks } from './locks'
+import {
+  findRecordedOutcome, mutationScope, recordOutcome, scopeMismatchError,
+} from './idempotency'
 import { isCapacityError, withRetry } from './retry'
 import { validateAssignment, type ClaimContext } from './validate'
 
@@ -70,6 +73,23 @@ export async function assignClaim(
   return withRetry(() =>
     input.db.$transaction(async (tx) =>
       withOrderedLocks(tx, { shiftIds: [input.shiftId], userIds: [input.userId] }, async () => {
+        // Replay check FIRST, and inside the lock. Outside it, two simultaneous
+        // retries of one key both miss, both do the work, and the second dies
+        // on the primary key — turning a benign retry into an error.
+        const scope = mutationScope('claim', input.shiftId, input.userId, input.actorId)
+        if (input.mutationId !== undefined) {
+          const seen = await findRecordedOutcome<{ claimId: number } | AppError>(
+            tx, input.mutationId, scope,
+          )
+          if (seen && 'mismatch' in seen) return scopeMismatchError()
+          if (seen) return seen.replay
+        }
+
+        // The body's result is captured once and recorded once, rather than a
+        // `recordOutcome` call beside every early return. There are five ways
+        // out of the rules below; a missed one would silently make that
+        // rejection non-idempotent, and nothing would fail to say so.
+        const outcome = await (async (): Promise<{ claimId: number } | AppError> => {
         const shift = await tx.shift.findUnique({
           where: { id: input.shiftId },
           include: { requirements: true },
@@ -139,18 +159,37 @@ export async function assignClaim(
         })
 
         return { claimId: claim.id }
+        })()
+
+        if (input.mutationId !== undefined) {
+          await recordOutcome(tx, input.mutationId, scope, outcome)
+        }
+        return outcome
       }),
     TX_OPTIONS,
     ).catch((err: unknown) => {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        // Unreachable while the advisory lock holds — a hit here is evidence
-        // of a lock regression, not a benign duplicate submit, so it must
-        // leave a trace rather than being silently presented as one.
+        const target = err.meta?.target as string[] | string | undefined
+        const hit = Array.isArray(target) ? target.join(',') : (target ?? '')
+
+        // MutationOutcome's PK is keyed on mutationId, which the advisory lock
+        // — keyed on (shift, user) — does NOT cover. Two concurrent requests
+        // reusing one key for DIFFERENT requests therefore take different
+        // locks, both miss the replay lookup, and the second collides here.
+        // That is the same client bug `scopeMismatchError` describes, just
+        // reached by a race instead of sequentially, so it gets the same
+        // answer. Crucially it is NOT evidence of a lock regression, and must
+        // not raise that alarm.
+        if (hit.includes('mutationId')) return scopeMismatchError()
+
+        // Claim(shiftId, userId) IS covered by the lock, so a hit here really
+        // is unreachable-in-theory and worth a trace rather than a silent
+        // conversion.
         console.warn(
-          'assignClaim: unique-constraint backstop fired — advisory lock may be ineffective',
+          'assignClaim: Claim unique-constraint backstop fired — advisory lock may be ineffective',
           err.meta,
         )
-        if ((err.meta?.target as string[] | undefined)?.includes('userId')) {
+        if (hit.includes('userId')) {
           return createAppError('ALREADY_CLAIMED', 'You already hold this shift.')
         }
         throw err
@@ -179,6 +218,20 @@ export async function unassignClaim(input: UnassignInput): Promise<{ ok: true } 
   return withRetry(() =>
     input.db.$transaction(async (tx) =>
       withOrderedLocks(tx, { shiftIds: [input.shiftId], userIds: [input.userId] }, async () => {
+        // Same replay-inside-the-lock rule as assignClaim, and the mirror-image
+        // bug: without it, retrying a release that already succeeded answers
+        // NOT_CLAIMED, and the optimistic UI rolls back to showing the person
+        // still holding a shift they have given up.
+        const scope = mutationScope('release', input.shiftId, input.userId)
+        if (input.mutationId !== undefined) {
+          const seen = await findRecordedOutcome<{ ok: true } | AppError>(
+            tx, input.mutationId, scope,
+          )
+          if (seen && 'mismatch' in seen) return scopeMismatchError()
+          if (seen) return seen.replay
+        }
+
+        const outcome = await (async (): Promise<{ ok: true } | AppError> => {
         const shift = await tx.shift.findUnique({ where: { id: input.shiftId } })
         if (!shift) return createAppError('NOT_FOUND', 'That shift no longer exists.')
         if (shift.startsAt <= now) {
@@ -200,8 +253,24 @@ export async function unassignClaim(input: UnassignInput): Promise<{ ok: true } 
         })
 
         return { ok: true as const }
+        })()
+
+        if (input.mutationId !== undefined) {
+          await recordOutcome(tx, input.mutationId, scope, outcome)
+        }
+        return outcome
       }),
     TX_OPTIONS,
-    ),
+    ).catch((err: unknown) => {
+      // Mirror of assignClaim's handler: a reused key racing against a
+      // different request collides on MutationOutcome's PK. Without this the
+      // same client bug surfaces here as an unhandled 500.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        const target = err.meta?.target as string[] | string | undefined
+        const hit = Array.isArray(target) ? target.join(',') : (target ?? '')
+        if (hit.includes('mutationId')) return scopeMismatchError()
+      }
+      throw err
+    }),
   ).catch(toBusyError)
 }

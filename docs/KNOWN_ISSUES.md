@@ -74,11 +74,19 @@ lives in `tests/rules/retry.test.ts` and `tests/rules/capacity.test.ts` — the 
 is tested by injecting the error rather than provoking real contention, deliberately,
 since load-dependence is exactly what made this bug hard to see.
 
-**Not fixed, and worth knowing:** `assignClaim` still isn't idempotent from the caller's
-perspective. A client that retries a `BUSY` is safe (the transaction never ran), but a
-client that retries after a genuine timeout mid-transaction could still double-submit.
-The unique constraint on `(shiftId, userId)` catches that today; a mutation-id-keyed
-dedup would be the fuller answer.
+**Follow-up, now fixed (2026-07-31):** `assignClaim` was not idempotent from the caller's
+perspective. The data was never at risk — the unique index on `(shiftId, userId)` prevents a
+duplicate claim — but a nurse could tap Claim, have the transaction commit, lose the response
+to a flaky connection, and have the client's retry answered with `ALREADY_CLAIMED`. That is an
+*error* for an action that succeeded, and the optimistic UI rolls back on an error, so they
+ended up looking at a shift marked unclaimed that they actually held. Releasing a shift had the
+mirror bug via `NOT_CLAIMED`.
+
+Both halves are now in place — the server records and replays outcomes keyed on the client's
+`mutationId`, and the client retries once with that **same** key when a request never lands.
+Both were needed: a review caught that the server work alone fixed nothing a nurse would
+notice, because the client minted a fresh key on every attempt and so never presented a retry
+at all. See "Claim retries are idempotent" below.
 
 ## ~~No reactivation for a deactivated member~~ — FIXED
 
@@ -174,3 +182,40 @@ single-key question ("has this one user accepted?") and now uses `getUserById` �
 an exact answer, and no dependence on a listing being complete. Answering it by walking the
 directory would have made a truncated read look like "user absent", and the guard fails open
 on absence.
+
+## Claim retries are idempotent — and the record grows
+
+**Status:** implemented 2026-07-31. Not a defect; recorded because the table needs a
+retention policy before this runs long in production.
+
+`assignClaim` and `unassignClaim` record their outcome against the client's `mutationId` in
+`MutationOutcome`, inside the same transaction as the mutation itself. A retry with the same
+key replays the recorded answer instead of re-running the rules.
+
+Three properties worth preserving if this is ever touched:
+
+- **The record is written in the mutation's own transaction.** The answer and the effect
+  commit together or not at all, so a replay can never report a success that did not happen.
+- **The replay check runs inside the advisory lock.** Outside it, two simultaneous retries of
+  one key both miss the record, both do the work, and the second dies on the primary key —
+  turning a benign retry into an error.
+- **Only committed outcomes are recorded.** A capacity failure (`BUSY`) never runs the
+  transaction body, so nothing is written for it. That matters: caching a transient
+  "server was busy" answer against a key would make the client's own retry permanently
+  useless.
+
+A key presented for a *different* request (different operation, shift, or user) is refused
+with `INVALID_INPUT` rather than replayed — one nurse's key must never hand them another
+nurse's answer.
+
+**Cost, measured rather than assumed:** the replay `SELECT` and the outcome `INSERT` both sit
+inside the shift's advisory lock, on the losing path as well as the winning one — which
+directly inflates the queue depth `maxWait: 15_000` was sized against. A 50-claimant burst
+carrying keys finishes in ~750ms with zero `BUSY`, roughly 20× inside the limit.
+`tests/concurrency/burst-keyed.test.ts` is the guard; every other concurrency test passes no
+key and therefore still measures the old path.
+
+**The open part:** `MutationOutcome` grows by one row per claim/release and is never pruned.
+At clinic scale that is slow — hundreds of rows a week — but it is unbounded. It is indexed on
+`createdAt` precisely so a retention job can delete anything older than a retry could plausibly
+arrive for (hours, not months). That job does not exist yet.

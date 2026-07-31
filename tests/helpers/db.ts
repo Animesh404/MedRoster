@@ -27,7 +27,8 @@ export async function resetTestDb(): Promise<void> {
   const db = await getTestDb()
   await db.$executeRawUnsafe(`
     TRUNCATE "Claim", "ShiftRequirement", "Shift", "ShiftSeries",
-             "ImportRowResult", "ImportRun", "EventOutbox", "User" RESTART IDENTITY CASCADE
+             "ImportRowResult", "ImportRun", "EventOutbox", "MutationOutcome",
+             "User" RESTART IDENTITY CASCADE
   `)
 }
 
