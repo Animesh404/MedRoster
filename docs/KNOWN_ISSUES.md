@@ -276,12 +276,36 @@ the polling-client angle, and that missed these consumers completely.
 delete back. `app/api/cron/prune/route.ts` does not call it, and a test asserts it does not, so
 it cannot be wired in by accident.
 
-### What has to happen first
+### Progress: drop notices are now durable (2026-07-31)
 
-Drop notices need a durable home of their own — a `DropNotice` row per affected member, with
-its own lifecycle (seen/dismissed, or simply "until the shift has passed"), rather than being
-reconstructed from an event log. Once notices no longer depend on the outbox, pruning it is a
-one-line change behind a signal that already works.
+`DropNotice` is a real table, written in the same transaction as every drop — a shift edit that
+makes someone ineligible, a shift deletion, an offboarding — through one `recordDropNotices`
+helper, so a fourth drop path cannot quietly forget. The shift's times are **snapshotted** on
+the row, which also retires the old trick of recovering a deleted shift's times by digging
+through its `shift.created`/`shift.edited` history.
 
-Until then the table grows. That is the lesser problem, and it is the one that is visible.
+Lifecycle: **dismissible, and auto-expiring once the shift has started.** Dismissal is the
+acknowledgement — without it somebody dropped from a shift four weeks out stares at the same
+banner for four weeks. Auto-expiry means an unread notice cannot accumulate forever. A notice
+whose `shiftStartsAt` is NULL keeps showing, because hiding it would be the silent loss this
+table exists to prevent.
+
+Existing notices were **backfilled** from `EventOutbox` in the migration — 10 real ones on the
+dev database. Without that, anyone dropped shortly before the deploy would have lost their
+notice at deploy time, which is precisely the harm being fixed.
+
+### What still blocks pruning
+
+One consumer left: the **shift-detail activity timeline** (`app/(app)/shifts/[id]/page.tsx`).
+It builds from two sources — the live claim list, which is durable, and the week's event
+history, which is not. Pruning would silently thin the historical half: releases, drops and
+retimes older than the window would disappear while current claims stayed.
+
+This is materially less severe than the drop-notice case. A missing notice means somebody does
+not know they are not working; a thinner timeline means less context on a page that already
+shows current state correctly. It may well be an acceptable trade — but it is a decision to
+take deliberately, not a side effect of enabling a cron line.
+
+`pruneEventOutbox` remains written, tested, and unwired, with a test asserting the cron leaves
+the outbox alone. The table keeps growing until that decision is made.
 

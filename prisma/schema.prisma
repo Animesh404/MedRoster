@@ -52,6 +52,7 @@ model User {
   claims        Claim[]     @relation("ClaimHolder")
   assignedBy    Claim[]     @relation("ClaimAssigner")
   importRuns    ImportRun[]
+  dropNotices   DropNotice[]
 }
 
 model Shift {
@@ -158,6 +159,38 @@ model MutationOutcome {
   createdAt  DateTime @default(now()) @db.Timestamptz(3)
 
   @@index([createdAt])
+}
+
+/// A durable record that a member lost a shift they were holding.
+///
+/// Previously reconstructed from `EventOutbox` at render time, which made the
+/// outbox impossible to prune: deleting an event deleted a notice a nurse might
+/// never have seen. `/my-shifts` calls this "the one thing a staff member
+/// cannot be left to discover only by noticing a shift missing on the day", so
+/// it needs a store of its own rather than a side effect of a replay log.
+///
+/// The shift's own times are SNAPSHOT here rather than joined. A deletion
+/// removes the `Shift` row entirely, and the old code recovered its times by
+/// digging through that shift's `shift.created`/`shift.edited` history — which
+/// only worked while those events survived.
+model DropNotice {
+  id            Int       @id @default(autoincrement())
+  userId        Int
+  shiftId       Int
+  /// 'dropped' — an edit made them ineligible. 'deleted' — the shift is gone.
+  kind          String
+  reason        String
+  /// Snapshot, not a join: the Shift row may no longer exist.
+  shiftStartsAt DateTime? @db.Timestamptz(3)
+  shiftEndsAt   DateTime? @db.Timestamptz(3)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  /// Set when the member acknowledges it. Notices also stop showing once
+  /// `shiftStartsAt` is past, so an unread one cannot accumulate forever.
+  dismissedAt   DateTime? @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, dismissedAt])
 }
 
 /// How far `EventOutbox` has been pruned.
