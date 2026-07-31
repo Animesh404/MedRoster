@@ -30,7 +30,39 @@ const HTTP_VERBS = ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const
  * moment any route file appears without a withAuth-wrapped handler.
  */
 describe('API route authorisation coverage', () => {
-  const files = globSync('app/api/**/route.ts')
+  const allFiles = globSync('app/api/**/route.ts')
+
+  /**
+   * Routes that legitimately do NOT go through `withAuth`, each with the reason.
+   *
+   * This is an escape hatch, and it is deliberately shaped to be an awkward
+   * one: adding an entry is a visible, reviewable edit to the very test that
+   * exists to stop routes shipping unguarded. A route belongs here only when it
+   * has no MedRoster session to authorize against AND enforces its own check —
+   * never merely because `withAuth` was inconvenient.
+   *
+   * Every exempt route is still asserted below to carry SOME authorization.
+   */
+  const UNAUTHENTICATED_BY_DESIGN: Record<string, { reason: string; guard: string }> = {
+    'app/api/cron/prune/route.ts': {
+      reason: 'Invoked by Vercel Cron, which carries no user session.',
+      guard: 'CRON_SECRET',
+    },
+  }
+
+  const files = allFiles.filter((f) => !(f in UNAUTHENTICATED_BY_DESIGN))
+  const exempt = allFiles.filter((f) => f in UNAUTHENTICATED_BY_DESIGN)
+
+  // An exemption is not permission to be unguarded — it only changes WHICH
+  // guard is required. Without this, the allowlist would be a way to ship an
+  // open endpoint by adding one line.
+  it.each(exempt)('%s is exempt from withAuth but enforces its own guard', (file) => {
+    const src = readFileSync(file, 'utf8')
+    const { guard } = UNAUTHENTICATED_BY_DESIGN[file]!
+    expect(src, `${file} is exempt but references no guard`).toContain(guard)
+    // And it must refuse when the secret is absent, rather than running open.
+    expect(src, `${file} must refuse to run when ${guard} is unset`).toMatch(/if \s*\(!\s*\w+\)/)
+  })
 
   it.skipIf(files.length === 0)('finds route files to check', () => {
     expect(files.length).toBeGreaterThan(0)
