@@ -46,3 +46,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Supabase CLI binary, downloaded by the `supabase` npm dev dependency.
+# 97MB — it must never be committed again (it was once, see git history).
+supabase-go
