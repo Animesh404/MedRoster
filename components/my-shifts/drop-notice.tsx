@@ -1,14 +1,20 @@
+'use client'
+
+import { useState } from 'react'
+import { useRouter } from 'next/navigation'
+
 export interface DropNotice {
+  /** `DropNotice.id` — what the dismiss endpoint acts on. */
+  id: number
   shiftId: number
   reason: string
   at: string | null
   kind: 'dropped' | 'deleted'
-  /** The dropped shift's OWN scheduled time — best-effort (see
-   *  `app/(app)/my-shifts/page.tsx`'s `shiftTimeLabel`): resolved from the
-   *  still-live `Shift` row when it exists, or from that shift's own event
-   *  history (`shift.created`/`shift.edited`) when it doesn't (a deletion
-   *  removes the `Shift` row but never its `EventOutbox` rows). `null` only
-   *  when neither source has it — genuinely unknown, not just unfetched. */
+  /** The dropped shift's OWN scheduled time, SNAPSHOT when the drop happened.
+   *  It used to be reconstructed at render time — from the live `Shift` row, or
+   *  from that shift's `shift.created`/`shift.edited` history once the row was
+   *  deleted — which is what made `EventOutbox` impossible to prune. `null`
+   *  only for notices backfilled from events that no longer carried a time. */
   shiftStartsAt: string | null
   shiftEndsAt: string | null
 }
@@ -50,7 +56,20 @@ function shiftRangeLabel(startsAt: string | null, endsAt: string | null): string
  * gets no animation... bad news gets a static notice, not a flourish."
  */
 export function DropNoticeBanner({ notices }: { notices: DropNotice[] }) {
-  if (notices.length === 0) return null
+  const router = useRouter()
+  // Dismissed optimistically: the notice vanishes on click rather than after a
+  // round trip, and reappears on the refresh if the server refused.
+  const [dismissed, setDismissed] = useState<Set<number>>(new Set())
+
+  const visible = notices.filter((n) => !dismissed.has(n.id))
+  if (visible.length === 0) return null
+
+  function dismiss(id: number) {
+    setDismissed((d) => new Set(d).add(id))
+    void fetch(`/api/notices/${id}`, { method: 'DELETE' })
+      .catch(() => {})
+      .finally(() => router.refresh())
+  }
 
   return (
     <div
@@ -58,19 +77,29 @@ export function DropNoticeBanner({ notices }: { notices: DropNotice[] }) {
       className="space-y-2 rounded-[18px] border border-rose-300 bg-rose-50 px-5 py-4 dark:border-rose-800 dark:bg-rose-950"
     >
       <p className="text-sm font-semibold text-rose-900 dark:text-rose-100">
-        {notices.length === 1 ? 'You were removed from a shift' : `You were removed from ${notices.length} shifts`}
+        {visible.length === 1 ? 'You were removed from a shift' : `You were removed from ${visible.length} shifts`}
       </p>
       <ul className="space-y-1.5">
-        {notices.map((n, i) => {
+        {visible.map((n) => {
           const shiftLabel = shiftRangeLabel(n.shiftStartsAt, n.shiftEndsAt)
           return (
-            <li key={i} className="text-sm text-rose-800 dark:text-rose-200">
-              <span className="font-medium">{shiftLabel ?? `Shift #${n.shiftId}`}</span>
-              {' — '}
-              {n.kind === 'deleted' ? 'cancelled' : 'dropped'}: {n.reason}
-              {n.at && (
-                <span className="text-rose-600 dark:text-rose-400"> · reported {reportedAtFmt.format(new Date(n.at))}</span>
-              )}
+            <li key={n.id} className="flex items-start justify-between gap-3 text-sm text-rose-800 dark:text-rose-200">
+              <span>
+                <span className="font-medium">{shiftLabel ?? `Shift #${n.shiftId}`}</span>
+                {' — '}
+                {n.kind === 'deleted' ? 'cancelled' : 'dropped'}: {n.reason}
+                {n.at && (
+                  <span className="text-rose-600 dark:text-rose-400"> · reported {reportedAtFmt.format(new Date(n.at))}</span>
+                )}
+              </span>
+              <button
+                type="button"
+                onClick={() => dismiss(n.id)}
+                aria-label={`Dismiss notice about shift ${shiftLabel ?? n.shiftId}`}
+                className="shrink-0 rounded-md px-2 py-0.5 text-xs font-medium text-rose-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-rose-400/50 dark:text-rose-300"
+              >
+                Dismiss
+              </button>
             </li>
           )
         })}

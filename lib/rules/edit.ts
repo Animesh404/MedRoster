@@ -6,6 +6,7 @@ import { weekTopic } from '@/lib/events/topics'
 import { TX_OPTIONS } from './assign'
 import { withOrderedLocks } from './locks'
 import { withRetry } from './retry'
+import { recordDropNotices } from './drop-notice'
 import { validateAssignment } from './validate'
 
 export interface ProposedShift {
@@ -207,6 +208,7 @@ export async function commitShiftEdit(
           }
 
           const oldStartsAt = shift.startsAt
+          const oldEndsAt = shift.endsAt
 
           await tx.shift.update({
             where: { id: shiftId },
@@ -244,6 +246,22 @@ export async function commitShiftEdit(
               })
             }
           }
+
+          // Durable, per-member, and written in this same transaction. The
+          // event above is for live clients; this is what a nurse who was
+          // offline still sees when they next open the app.
+          // The OLD time, not the proposed one. These members no longer hold
+          // the shift, so the new time is one they were never on — naming it
+          // would tell a nurse they lost a Thursday shift they never had,
+          // while the Tuesday actually in their diary goes unmentioned.
+          await recordDropNotices(tx, outcome.dropped.map((d) => ({
+            userId: d.userId,
+            shiftId,
+            kind: 'dropped' as const,
+            reason: d.reason,
+            shiftStartsAt: oldStartsAt,
+            shiftEndsAt: oldEndsAt,
+          })))
 
           return { ...outcome, version: shift.version + 1 }
         })
@@ -302,6 +320,18 @@ export async function commitShiftDelete(
             payload: { shiftId, affectedUserIds: claimants.map((c) => c.userId) },
             ...(mutationId !== undefined ? { mutationId } : {}),
           })
+
+          // Snapshot the times BEFORE the row is deleted. Afterwards they are
+          // only recoverable by digging through this shift's event history,
+          // which is precisely the dependency this table removes.
+          await recordDropNotices(tx, claimants.map((c) => ({
+            userId: c.userId,
+            shiftId,
+            kind: 'deleted' as const,
+            reason: 'A manager deleted this shift.',
+            shiftStartsAt: shift.startsAt,
+            shiftEndsAt: shift.endsAt,
+          })))
 
           await tx.shift.delete({ where: { id: shiftId } }) // claims cascade
 

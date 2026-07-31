@@ -3,6 +3,7 @@ import { createAppError, type AppError } from '@/lib/domain/errors'
 import { emitEvent } from '@/lib/events/outbox'
 import { weekTopic } from '@/lib/events/topics'
 import { withOrderedLocks } from './locks'
+import { recordDropNotices } from './drop-notice'
 import {
   findRecordedOutcome, mutationScope, recordOutcome, scopeMismatchError,
 } from './idempotency'
@@ -148,6 +149,15 @@ export async function assignClaim(
           },
         })
 
+        // Holding the shift again makes any outstanding "you were removed from
+        // this shift" notice a lie, so it is dismissed rather than left to sit
+        // above a shift that is back in their list. Dismissed, not deleted: the
+        // record that they WERE told stays intact.
+        await tx.dropNotice.updateMany({
+          where: { userId: user.id, shiftId: shift.id, dismissedAt: null },
+          data: { dismissedAt: now },
+        })
+
         await emitEvent(tx, {
           topic: weekTopic(shift.startsAt),
           type: 'shift.claimed',
@@ -208,6 +218,18 @@ export interface UnassignInput {
   db: PrismaClient
   shiftId: number
   userId: number
+  /**
+   * Who performed the release, when known.
+   *
+   * This function serves BOTH self-release and a manager removing somebody, and
+   * without it cannot tell them apart — which is how the manager path went for
+   * a long time writing no drop notice at all, silently. Only a release
+   * performed by somebody else earns a notice: telling a nurse they were
+   * "removed" from a shift they gave up themselves would be worse than saying
+   * nothing. Absent (the seeder, internal callers) is treated as self, because
+   * guessing "somebody else" would spam a notice for every seeded release.
+   */
+  actorId?: number
   mutationId?: string
   now?: Date
 }
@@ -244,6 +266,20 @@ export async function unassignClaim(input: UnassignInput): Promise<{ ok: true } 
         if (!claim) return createAppError('NOT_CLAIMED', 'That person does not hold this shift.')
 
         await tx.claim.delete({ where: { id: claim.id } })
+
+        // Somebody else took this off them — they need telling, and the
+        // notice has to outlive the event. Same transaction as the delete, so
+        // a drop without its notice cannot happen.
+        if (input.actorId !== undefined && input.actorId !== input.userId) {
+          await recordDropNotices(tx, [{
+            userId: input.userId,
+            shiftId: input.shiftId,
+            kind: 'dropped',
+            reason: 'A manager removed you from this shift.',
+            shiftStartsAt: shift.startsAt,
+            shiftEndsAt: shift.endsAt,
+          }])
+        }
 
         await emitEvent(tx, {
           topic: weekTopic(shift.startsAt),

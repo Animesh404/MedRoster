@@ -159,6 +159,55 @@ describe('commitShiftEdit', () => {
     expect((await db.shift.findUnique({ where: { id: shift.id } }))!.version).toBe(1)
   })
 
+  // The write site, not just the event. Deleting the recordDropNotices call
+  // from edit.ts would otherwise leave the entire suite green.
+  it('records a durable drop notice for each dropped claimant', async () => {
+    const db = await getTestDb()
+    const shift = await makeShift(D('2026-12-01T09:00Z'), D('2026-12-01T17:00Z'), 2)
+    const first = await makeNurse(1)
+    const second = await makeNurse(2)
+    await assignClaim({ db, shiftId: shift.id, userId: first.id, actorId: first.id })
+    await assignClaim({ db, shiftId: shift.id, userId: second.id, actorId: second.id })
+
+    // A real RETIME, not an in-place requirement change: it is the only way
+    // to tell which time the notice snapshotted.
+    const proposed = {
+      startsAt: D('2026-12-03T09:00Z'), endsAt: D('2026-12-03T17:00Z'),
+      requirements: { NURSE: 1, DOCTOR: 0, RECEPTIONIST: 0 },
+    }
+    const preview = await previewShiftEdit(db, shift.id, proposed)
+    const result = await commitShiftEdit(db, shift.id, proposed, await expectFromPreview(preview))
+
+    const droppedUserId = ('dropped' in result ? result.dropped : [])[0]!.userId
+    const notices = await db.dropNotice.findMany({ where: { shiftId: shift.id } })
+    expect(notices).toHaveLength(1)
+    expect(notices[0]!.userId).toBe(droppedUserId)
+    expect(notices[0]!.kind).toBe('dropped')
+    // The OLD time — the one that was in their diary. Naming the new Thursday
+    // would tell a nurse they lost a shift they never held, while the Tuesday
+    // they will not now be working goes unmentioned.
+    expect(notices[0]!.shiftStartsAt?.toISOString()).toBe(shift.startsAt.toISOString())
+    expect(notices[0]!.shiftEndsAt?.toISOString()).toBe(shift.endsAt.toISOString())
+  })
+
+  it('records a durable drop notice for every claimant when the shift is deleted', async () => {
+    const db = await getTestDb()
+    const shift = await makeShift(D('2026-12-01T09:00Z'), D('2026-12-01T17:00Z'), 2)
+    const first = await makeNurse(1)
+    await assignClaim({ db, shiftId: shift.id, userId: first.id, actorId: first.id })
+
+    const preview = await previewShiftDelete(db, shift.id)
+    await commitShiftDelete(db, shift.id, await expectFromPreview(preview))
+
+    const notices = await db.dropNotice.findMany({ where: { shiftId: shift.id } })
+    expect(notices).toHaveLength(1)
+    expect(notices[0]!.kind).toBe('deleted')
+    // Snapshotted BEFORE the Shift row went — afterwards it is unrecoverable
+    // without digging through event history, which is the dependency this
+    // table removes.
+    expect(notices[0]!.shiftStartsAt?.toISOString()).toBe(shift.startsAt.toISOString())
+  })
+
   it('refuses a stale confirm when a concurrent edit bumped the version', async () => {
     const db = await getTestDb()
     const shift = await makeShift(D('2026-12-01T09:00Z'), D('2026-12-01T17:00Z'), 2)

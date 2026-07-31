@@ -261,27 +261,63 @@ resync.
 
 ### Why the pruning is not enabled
 
-`EventOutbox` is **not** only a replay log. It is the sole store behind:
+`EventOutbox` was **not** only a replay log. It was the sole store behind two consumers, and
+the retention design — reasoned entirely from the polling-client angle — missed both:
 
-- **`/my-shifts` drop notices** — which that page's own comment calls *"the one thing a staff
-  member cannot be left to discover only by noticing a shift missing on the day."*
-- **The shift-detail activity timeline.**
-
-Deleting a row there deletes a notice a nurse may never have seen. A shift four weeks out,
-dropped today, would lose its banner while the shift is still ahead of them; somebody who does
-not log in for a week would never learn at all. The retention design was reasoned entirely from
-the polling-client angle, and that missed these consumers completely.
+- **`/my-shifts` drop notices** — since fixed; see the section below. Deleting a row used to
+  delete a notice a nurse may never have seen.
+- **The shift-detail activity timeline** — still outstanding.
 
 `pruneEventOutbox` works and is tested — including that a failed watermark write rolls the
 delete back. `app/api/cron/prune/route.ts` does not call it, and a test asserts it does not, so
 it cannot be wired in by accident.
 
-### What has to happen first
+### Progress: drop notices are now durable (2026-07-31)
 
-Drop notices need a durable home of their own — a `DropNotice` row per affected member, with
-its own lifecycle (seen/dismissed, or simply "until the shift has passed"), rather than being
-reconstructed from an event log. Once notices no longer depend on the outbox, pruning it is a
-one-line change behind a signal that already works.
+`DropNotice` is a real table, written in the same transaction as every drop — a shift edit that
+makes someone ineligible, a shift deletion, an offboarding — through one `recordDropNotices`
+helper, so a fourth drop path cannot quietly forget. The shift's times are **snapshotted** on
+the row, which also retires the old trick of recovering a deleted shift's times by digging
+through its `shift.created`/`shift.edited` history.
 
-Until then the table grows. That is the lesser problem, and it is the one that is visible.
+Lifecycle: **dismissible, and auto-expiring `NOTICE_GRACE_MS` (48h) after the LATER of the
+shift's start and the notice's own creation.** Dismissal is the acknowledgement — without it
+somebody dropped from a shift four weeks out stares at the same banner for four weeks.
+
+Expiry is deliberately not *"once the shift has started"*, which was the first rule written and
+was wrong in a way worth recording: it conflated **acting** with **knowing**. Deleting a shift
+that started yesterday wrote a notice that was already past its own expiry, so it was filtered
+out the instant it was created and the member never saw it at all. Deleting one starting in ten
+minutes gave them ten minutes. The premise of the whole feature is that nobody discovers this
+by turning up, so the notice has to outlive the shift it is about. The `createdAt` floor is
+also what bounds a notice whose `shiftStartsAt` could never be recovered — it stays visible for
+a full grace period rather than forever.
+
+Existing notices were **backfilled** from `EventOutbox` in the migration — 10 real ones on the
+dev database. Without that, anyone dropped shortly before the deploy would have lost their
+notice at deploy time, which is precisely the harm being fixed. The backfill is bounded to the
+same 48-hour window (backfilling all history would greet everyone with months of drops they
+long since dealt with), dedupes the duplicate a cross-week retime emits on two topics, and
+falls back to event history for the times of a shift that was dropped and later deleted. It is
+covered by `tests/rules/drop-notice-backfill.test.ts`, which reads the migration file itself —
+SQL that runs once against production and cannot be undone gets tested like code.
+
+**Retention:** `pruneDropNotices` runs in the nightly cron, deleting rows only once both clocks
+`activeDropNotices` consults have run out. Safe in a way outbox pruning is not — it removes
+rows nobody can see, rather than rows somebody might still need.
+
+### What still blocks pruning
+
+One consumer left: the **shift-detail activity timeline** (`app/(app)/shifts/[id]/page.tsx`).
+It builds from two sources — the live claim list, which is durable, and the week's event
+history, which is not. Pruning would silently thin the historical half: releases, drops and
+retimes older than the window would disappear while current claims stayed.
+
+This is materially less severe than the drop-notice case. A missing notice means somebody does
+not know they are not working; a thinner timeline means less context on a page that already
+shows current state correctly. It may well be an acceptable trade — but it is a decision to
+take deliberately, not a side effect of enabling a cron line.
+
+`pruneEventOutbox` remains written, tested, and unwired, with a test asserting the cron leaves
+the outbox alone. The table keeps growing until that decision is made.
 
