@@ -12,6 +12,17 @@ vi.mock('@/app/(app)/actions', () => ({
   signOutAction: vi.fn(),
 }))
 
+// AppShell also renders <ThemeToggle>, which calls `useRouter()` to refresh
+// server components after a theme change. Without a router in the tree that
+// throws "invariant expected app router to be mounted" — a failure about
+// routing, in a file that only cares about which nav items each role sees.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: vi.fn(), replace: vi.fn(), refresh: vi.fn(),
+    back: vi.fn(), forward: vi.fn(), prefetch: vi.fn(),
+  }),
+}))
+
 const { AppShell } = await import('@/components/app-shell')
 
 const MANAGER: Principal = { id: 1, role: 'MANAGER', profession: null }

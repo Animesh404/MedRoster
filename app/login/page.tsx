@@ -4,6 +4,8 @@ import heroClinicTeam from '@/assets/images/hero-clinic-team.jpg'
 import Link from 'next/link'
 import { getRosterStats } from '@/lib/ui/stats'
 import { LoginForm } from './login-form'
+import { ThemeToggle } from '@/components/theme-toggle'
+import { currentTheme } from '@/lib/theme/server'
 
 // Live counts (below) come straight from the database, so this route must
 // stay dynamic — a static build would freeze them at build time.
@@ -24,6 +26,7 @@ export default async function LoginPage({
   // Aggregate counts only — nothing sensitive — so a failed connection just
   // hides the numbers rather than taking the whole sign-in page down.
   const stats = await getRosterStats().catch(() => null)
+  const theme = await currentTheme()
 
   return (
     <div className="grid min-h-screen lg:grid-cols-2">
@@ -67,7 +70,14 @@ export default async function LoginPage({
         ) : null}
       </div>
 
-      <div className="flex items-center justify-center p-6 sm:p-10">
+      <div className="relative flex items-center justify-center p-6 sm:p-10">
+        {/* Top-right of the form column, so it is reachable on the narrow
+            layout too — the photo panel beside it is hidden below `lg`, and a
+            toggle only in there would vanish on exactly the screens where a
+            dark interface matters most. */}
+        <div className="absolute top-4 right-4">
+          <ThemeToggle current={theme} />
+        </div>
         <div className="w-full max-w-sm space-y-8">
           <Link href="/" className="font-display text-lg font-semibold text-brand-deep lg:hidden dark:text-brand-mid">
             MedRoster
