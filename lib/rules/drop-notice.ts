@@ -49,27 +49,44 @@ export async function recordDropNotices(
  *
  *  - **Dismissed.** The acknowledgement. Without it, somebody dropped from a
  *    shift four weeks out stares at the same banner for four weeks.
- *  - **The shift has started.** Auto-expiry, so an unread notice cannot
- *    accumulate forever. There is nothing left to act on once the shift is
- *    underway.
+ *  - **Expired.** So an unread notice cannot accumulate forever.
  *
- * A notice whose `shiftStartsAt` is NULL keeps showing. That happens when a
- * deleted shift's times could not be recovered, and hiding it would silently
- * drop the notice entirely — the exact failure this table exists to prevent.
+ * Expiry is `shiftStartsAt + GRACE`, with a floor of `createdAt + GRACE` — NOT
+ * simply "the shift has started". That earlier rule conflated acting with
+ * knowing, and made a notice possible to be born invisible: deleting a shift
+ * that started yesterday wrote a notice whose start time was already past, so
+ * it was filtered out the instant it existed. Deleting one starting in ten
+ * minutes gave the nurse ten minutes. The entire premise here is that somebody
+ * must not discover this by turning up, so the notice has to outlive the shift
+ * it is about.
+ *
+ * A notice whose `shiftStartsAt` is NULL falls back to the `createdAt` floor
+ * rather than showing forever — it still gets a full grace period from when it
+ * was written, which is the guarantee that matters, without becoming permanent.
  */
+export const NOTICE_GRACE_MS = 48 * 60 * 60 * 1000
+
 export async function activeDropNotices(
   db: PrismaClient,
   userId: number,
   opts: { now?: Date } = {},
 ): Promise<DropNotice[]> {
   const now = opts.now ?? new Date()
+  const cutoff = new Date(now.getTime() - NOTICE_GRACE_MS)
+
   return db.dropNotice.findMany({
     where: {
       userId,
       dismissedAt: null,
-      OR: [{ shiftStartsAt: null }, { shiftStartsAt: { gt: now } }],
+      // Still within grace of the shift's start, OR still within grace of when
+      // the notice was written. The second is what stops a notice for an
+      // already-started (or timeless) shift being invisible on arrival.
+      OR: [{ shiftStartsAt: { gt: cutoff } }, { createdAt: { gt: cutoff } }],
     },
     orderBy: { id: 'desc' },
+    // A member with hundreds of outstanding notices has a different problem;
+    // this stops one runaway case turning a page render into an unbounded read.
+    take: 50,
   })
 }
 

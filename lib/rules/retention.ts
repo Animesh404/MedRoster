@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client'
+import { NOTICE_GRACE_MS } from './drop-notice'
 import { TX_OPTIONS } from './assign'
 
 /**
@@ -111,6 +112,71 @@ export async function pruneMutationOutcomes(
   return { deleted, exhausted }
 }
 
+
+/**
+ * How long a `DropNotice` row is kept after it stops being displayable.
+ *
+ * The table is append-only on every drop path, so without this it grows
+ * forever — the same unbounded-growth problem `MutationOutcome` has, with the
+ * same fix. Deletion is safe here in a way outbox deletion is not: a notice
+ * past `NOTICE_GRACE_MS` is already invisible to `activeDropNotices`, so
+ * pruning removes rows nobody can see rather than rows somebody might still
+ * need. The extra 30 days beyond the grace window is slack for anyone reading
+ * the table directly to answer "was this member told?".
+ */
+export const DROP_NOTICE_RETENTION_MS = NOTICE_GRACE_MS + 30 * 24 * 60 * 60 * 1000
+
+/**
+ * Deletes drop notices that can no longer be displayed.
+ *
+ * A row qualifies only when BOTH clocks `activeDropNotices` consults have run
+ * out — `shiftStartsAt` and `createdAt`. Keying on either one alone would
+ * delete rows the page still shows: a notice written today about a shift that
+ * started last month is live (recent `createdAt`), and so is a months-old
+ * notice about a shift still ahead (future `shiftStartsAt`).
+ */
+export async function pruneDropNotices(
+  db: PrismaClient,
+  opts: PruneOptions = {},
+): Promise<PruneResult> {
+  const now = opts.now ?? new Date()
+  const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE
+  const maxBatches = opts.maxBatches ?? DEFAULT_MAX_BATCHES
+  const cutoff = new Date(now.getTime() - DROP_NOTICE_RETENTION_MS)
+
+  let deleted = 0
+  let exhausted = true
+
+  for (let batch = 0; batch < maxBatches; batch++) {
+    const expiring = await db.dropNotice.findMany({
+      where: {
+        createdAt: { lt: cutoff },
+        // NULL means the times were never recovered, which cannot keep a row
+        // alive forever — `createdAt` alone governs those.
+        OR: [{ shiftStartsAt: null }, { shiftStartsAt: { lt: cutoff } }],
+      },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+      take: batchSize,
+    })
+    if (expiring.length === 0) {
+      exhausted = false
+      break
+    }
+
+    const { count } = await db.dropNotice.deleteMany({
+      where: { id: { in: expiring.map((r) => r.id) } },
+    })
+    deleted += count
+
+    if (expiring.length < batchSize) {
+      exhausted = false
+      break
+    }
+  }
+
+  return { deleted, exhausted }
+}
 
 /**
  * How long `EventOutbox` rows are kept.

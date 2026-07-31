@@ -120,6 +120,21 @@ describe('deactivateMember', () => {
     })
   })
 
+  // Without this, deleting the recordDropNotices call from deactivate.ts would
+  // leave the whole suite green — the write site would be unverified.
+  it('records a durable drop notice for each released shift', async () => {
+    const { db, nurse, future } = await seedMemberWithClaims()
+    const { port } = fakeAdmin()
+
+    await deactivateMember(db, port, nurse.id, { now: NOW })
+
+    const notices = await db.dropNotice.findMany({ where: { userId: nurse.id } })
+    expect(notices).toHaveLength(1)
+    expect(notices[0]!.shiftId).toBe(future.id)
+    // Snapshotted, so the notice survives the shift being edited or deleted.
+    expect(notices[0]!.shiftStartsAt?.toISOString()).toBe(FUTURE.toISOString())
+  })
+
   it('emits no event when the member held no future shifts', async () => {
     const db = await getTestDb()
     const nurse = await db.user.create({

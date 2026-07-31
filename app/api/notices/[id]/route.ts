@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db/client'
 import { withAuth, errorResponse, type AuthedContext } from '@/lib/auth/with-auth'
 import { createAppError } from '@/lib/domain/errors'
+import { parseDbId } from '@/lib/contracts/common'
 import { dismissDropNotice } from '@/lib/rules/drop-notice'
 
 /**
@@ -14,8 +15,11 @@ import { dismissDropNotice } from '@/lib/rules/drop-notice'
  */
 export const DELETE = withAuth('shift:read', async (_req: Request, ctx: AuthedContext<{ id: string }>) => {
   const { id } = await ctx.params
-  const noticeId = Number(id)
-  if (!Number.isInteger(noticeId) || noticeId <= 0) {
+  // `parseDbId`, not `Number(...)` — the loose check this replaces accepted
+  // '1e21', ' 1 ', hex, and out-of-Int32 values, each of which either 500s in
+  // Prisma or resolves to the wrong row.
+  const noticeId = parseDbId(id)
+  if (noticeId === null) {
     return errorResponse(createAppError('INVALID_INPUT', 'That is not a valid notice id.'))
   }
 

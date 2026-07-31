@@ -99,7 +99,7 @@ describe('cron/prune', () => {
     const res = await route.GET(req(`Bearer ${SECRET}`))
 
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ deleted: 2, exhausted: false, mutationOutcomes: 2 })
+    expect(await res.json()).toEqual({ deleted: 2, exhausted: false, mutationOutcomes: 2, dropNotices: 0 })
     const left = await db.mutationOutcome.findMany({ select: { mutationId: true } })
     expect(left.map((r) => r.mutationId)).toEqual(['fresh'])
   })
@@ -145,5 +145,34 @@ describe('cron/prune — leaves EventOutbox alone', () => {
     expect(res.status).toBe(200)
     expect(await db.eventOutbox.count()).toBe(1)
     expect((await res.json()).outboxEvents).toBeUndefined()
+  })
+})
+
+/**
+ * The job's other half. Without this the route could stop calling
+ * `pruneDropNotices` entirely and every test above would stay green.
+ */
+describe('cron/prune — drop notices', () => {
+  it('deletes drop notices nobody can see any more', async () => {
+    const db = await getTestDb()
+    const nurse = await db.user.create({
+      data: { email: 'n@c.test', name: 'N', role: 'STAFF', profession: 'NURSE' },
+    })
+    const { DROP_NOTICE_RETENTION_MS } = await import('@/lib/rules/retention')
+    const old = new Date(Date.now() - DROP_NOTICE_RETENTION_MS - 60_000)
+    await db.dropNotice.create({
+      data: { userId: nurse.id, shiftId: 1, kind: 'dropped', reason: 'r', createdAt: old, shiftStartsAt: old },
+    })
+    await db.dropNotice.create({
+      data: { userId: nurse.id, shiftId: 2, kind: 'dropped', reason: 'r', shiftStartsAt: new Date(Date.now() + 86_400_000) },
+    })
+
+    const res = await route.GET(req(`Bearer ${SECRET}`))
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ dropNotices: 1 })
+    // The live one survives — the job prunes the invisible, not the unread.
+    const left = await db.dropNotice.findMany({ select: { shiftId: true } })
+    expect(left.map((r) => r.shiftId)).toEqual([2])
   })
 })

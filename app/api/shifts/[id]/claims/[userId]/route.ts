@@ -22,6 +22,9 @@ export const DELETE = withAuth('claim:delete:self', async (req: Request, ctx: Au
   const mutationId = new URL(req.url).searchParams.get('mutationId') ?? undefined
   const result = await unassignClaim({
     db: prisma, shiftId, userId: targetUserId,
+    // Distinguishes "I released my own shift" from "a manager removed me",
+    // which is what decides whether a drop notice is written.
+    actorId: ctx.principal.id,
     ...(mutationId !== undefined ? { mutationId } : {}),
   })
 

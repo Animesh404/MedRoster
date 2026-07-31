@@ -27,28 +27,61 @@ ALTER TABLE "DropNotice" ADD CONSTRAINT "DropNotice_userId_fkey" FOREIGN KEY ("u
 -- pruned in the first place. The events are all still there today, so this is
 -- the one moment the backfill is free.
 --
--- Shift times come from the live Shift row where it still exists. For a DELETED
--- shift they are recovered from that shift's own event history, which is what
--- the old render-time code did; NULL when neither source has them, which the UI
--- already handles.
+-- Bounded to the last 48 hours, matching NOTICE_GRACE_MS in lib/rules/drop-notice.ts.
+-- That is precisely the set of notices that would still be live if this table had
+-- always existed. Backfilling the full outbox instead would resurrect months-old
+-- drops as fresh banners on the day of deploy — every member who ever lost a shift
+-- to an edit greeted by a wall of things they dealt with in April.
+--
+-- No replay guard is needed: this file CREATEs the table immediately above, so a
+-- second run fails at the CREATE and never reaches these INSERTs.
+
+-- Shift times: the live Shift row when it still exists, else that shift's own
+-- event history. A shift that was retimed and LATER deleted has no Shift row,
+-- and without the fallback its notice would carry no times at all — leaving the
+-- member a bare shift number and no way to know which shift they lost.
 INSERT INTO "DropNotice" ("userId", "shiftId", kind, reason, "shiftStartsAt", "shiftEndsAt", "createdAt")
-SELECT
-  (d->>'userId')::int,
-  (e.payload->>'shiftId')::int,
+SELECT DISTINCT ON (d."userId", d."shiftId", d."createdAt")
+  d."userId",
+  d."shiftId",
   'dropped',
-  COALESCE(d->>'reason', 'You were removed from this shift.'),
-  s."startsAt",
-  s."endsAt",
-  e."createdAt"
-FROM "EventOutbox" e
-CROSS JOIN LATERAL jsonb_array_elements(e.payload->'dropped') AS d
-LEFT JOIN "Shift" s ON s.id = (e.payload->>'shiftId')::int
-WHERE e.type = 'shift.claims_dropped'
-  AND (d->>'userId') IS NOT NULL
-  AND EXISTS (SELECT 1 FROM "User" u WHERE u.id = (d->>'userId')::int);
+  d.reason,
+  COALESCE(
+    s."startsAt",
+    (SELECT (h.payload->>'startsAt')::timestamptz FROM "EventOutbox" h
+      WHERE h.type IN ('shift.edited','shift.created')
+        AND (h.payload->>'shiftId')::int = d."shiftId"
+      ORDER BY h.id DESC LIMIT 1)
+  ),
+  COALESCE(
+    s."endsAt",
+    (SELECT (h.payload->>'endsAt')::timestamptz FROM "EventOutbox" h
+      WHERE h.type IN ('shift.edited','shift.created')
+        AND (h.payload->>'shiftId')::int = d."shiftId"
+      ORDER BY h.id DESC LIMIT 1)
+  ),
+  d."createdAt"
+FROM (
+  -- DISTINCT ON collapses the duplicate a cross-week retime produces: moving a
+  -- shift from one week to another emits shift.claims_dropped on BOTH topics,
+  -- with identical payloads. Two events, one drop — the member lost the shift
+  -- once and must be told once.
+  SELECT
+    (dr->>'userId')::int              AS "userId",
+    (e.payload->>'shiftId')::int      AS "shiftId",
+    COALESCE(dr->>'reason', 'You were removed from this shift.') AS reason,
+    e."createdAt"                     AS "createdAt"
+  FROM "EventOutbox" e
+  CROSS JOIN LATERAL jsonb_array_elements(e.payload->'dropped') AS dr
+  WHERE e.type = 'shift.claims_dropped'
+    AND e."createdAt" > now() - interval '48 hours'
+    AND (dr->>'userId') IS NOT NULL
+) d
+LEFT JOIN "Shift" s ON s.id = d."shiftId"
+WHERE EXISTS (SELECT 1 FROM "User" u WHERE u.id = d."userId");
 
 INSERT INTO "DropNotice" ("userId", "shiftId", kind, reason, "shiftStartsAt", "shiftEndsAt", "createdAt")
-SELECT
+SELECT DISTINCT ON (aff::int, (e.payload->>'shiftId')::int, e."createdAt")
   aff::int,
   (e.payload->>'shiftId')::int,
   'deleted',
@@ -60,11 +93,12 @@ SELECT
       AND (h.payload->>'shiftId')::int = (e.payload->>'shiftId')::int
     ORDER BY h.id DESC LIMIT 1),
   (SELECT (h.payload->>'endsAt')::timestamptz FROM "EventOutbox" h
-    WHERE h.type = 'shift.edited'
+    WHERE h.type IN ('shift.edited','shift.created')
       AND (h.payload->>'shiftId')::int = (e.payload->>'shiftId')::int
     ORDER BY h.id DESC LIMIT 1),
   e."createdAt"
 FROM "EventOutbox" e
 CROSS JOIN LATERAL jsonb_array_elements_text(e.payload->'affectedUserIds') AS aff
 WHERE e.type = 'shift.deleted'
+  AND e."createdAt" > now() - interval '48 hours'
   AND EXISTS (SELECT 1 FROM "User" u WHERE u.id = aff::int);

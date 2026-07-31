@@ -97,7 +97,7 @@ export async function deactivateMember(
 
         const doomed = await tx.claim.findMany({
           where: { userId, shift: { startsAt: { gt: now } } },
-          select: { shiftId: true, shift: { select: { startsAt: true } } },
+          select: { shiftId: true, shift: { select: { startsAt: true, endsAt: true } } },
         })
 
         await tx.user.update({ where: { id: userId }, data: { deactivatedAt: now } })
@@ -128,7 +128,7 @@ export async function deactivateMember(
             kind: 'dropped' as const,
             reason: 'They were removed from the roster.',
             shiftStartsAt: claim.shift.startsAt,
-            shiftEndsAt: null,
+            shiftEndsAt: claim.shift.endsAt,
           })))
 
           for (const claim of doomed) {
