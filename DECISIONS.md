@@ -201,3 +201,36 @@ comes back able to claim; they do not come back to the rota they left.
 This mirrors the deactivation policy above — future claims are released because a member who
 has left should stop appearing as cover — and keeps the pair symmetric in intent even though
 it is asymmetric in effect.
+
+---
+
+## Google sign-in is deferred, and the button is gone
+
+**Password and magic link only. OAuth is scoped for later, not half-shipped.**
+
+A "Continue with Google" button used to sit on the login form. The provider was
+never enabled on the Supabase project, so clicking it returned a 400 from
+`/auth/v1/authorize` — an advertised way in that could not let anybody in. A
+broken door is worse than one fewer door, so the button is removed rather than
+disabled or hidden behind a flag.
+
+What is deliberately **kept** is the OAuth plumbing in
+`app/auth/callback/route.ts`. It is inert without a provider, and it carries the
+roster check that makes OAuth safe to enable at all: an unknown email is refused
+and the account GoTrue just minted is deleted again. Ripping that out would mean
+rewriting the security-relevant half of this feature when the decision changes.
+
+**The open question that has to be answered first**, and the reason this is a
+decision rather than a toggle: what should happen when a Google identity's email
+matches somebody who was already invited by email? Supabase can link the two
+identities into one account, or treat them as separate — and which it does
+depends on project settings rather than on anything in this repo. Linking silently
+means an attacker who can create a Google account at a known clinic address may
+inherit that member's roster access. Not linking means a member who accepted an
+invite by email and later clicks "Continue with Google" gets a second, empty
+account and cannot see their own shifts.
+
+Neither outcome is acceptable by accident. Enabling Google means picking one
+deliberately, configuring it, and testing both paths — see §5.4.1 of the auth
+design.
+

@@ -82,10 +82,11 @@ Two things only an operator can do, and the feature is inert without them:
 - **Configure custom SMTP** in the Supabase dashboard before inviting anyone real. The
   built-in mailer is capped near 2 emails/hour and only delivers to addresses on the
   project's own team — invites to real people will silently never arrive.
-- **Disable "Allow new users to sign up"** in the dashboard. This gates **OAuth (Google)
-  sign-in only** — an unknown email is refused. Magic link is gated separately in code
-  (`shouldCreateUser: false`), not by this setting, so leaving it enabled does not open
-  magic link to strangers.
+- **Disable "Allow new users to sign up"** in the dashboard — `npm run supabase:config` does
+  this for you. It is the first of three invite-only layers; magic link is gated separately in
+  code (`shouldCreateUser: false`), and both `/auth/callback` and `/auth/confirm` check the
+  roster. With no OAuth provider enabled there is currently no signup path this setting alone
+  guards, which is exactly why it must not be the only layer.
 
 ## Test
 
@@ -248,10 +249,13 @@ Still manual, because neither is a setting this app can decide for you:
 
 - **SMTP.** Supabase's built-in sender only delivers to project members and is
   rate-limited to a handful per hour. Inviting real staff needs your own SMTP.
-- **Google sign-in.** Needs a Google Cloud OAuth client, with
-  `https://<ref>.supabase.co/auth/v1/callback` as the redirect URI. Decide the
-  identity-linking behaviour first — see §5.4.1 of the auth design for what
-  happens when a Google identity's email matches an already-invited user.
+- **Google sign-in — deferred, see `DECISIONS.md`.** Sign-in is password and magic
+  link only. The login form has no Google button: the provider was never enabled, so
+  the one that used to be there returned a 400 to anyone who clicked it. The OAuth
+  plumbing in `app/auth/callback/route.ts` is kept and inert, because it carries the
+  roster check that makes OAuth safe to switch on. Enabling it means answering what
+  happens when a Google identity's email matches an already-invited member — a
+  decision about identity linking, not a dashboard toggle.
 
 ### Secrets the gate needs
 

@@ -1,8 +1,12 @@
 name: CI
 
 on:
+  # Deliberately NOT main. The go-live gate's `verify` stage runs this exact
+  # work on every push to main, so listing main here ran the whole suite twice
+  # per merge — double the minutes, and two results to reconcile when they
+  # disagreed about a flake.
   push:
-    branches: [main, 'feat/**']
+    branches: ['feat/**', 'fix/**', 'chore/**', 'perf/**', 'docs/**']
   pull_request:
     branches: [main]
 
