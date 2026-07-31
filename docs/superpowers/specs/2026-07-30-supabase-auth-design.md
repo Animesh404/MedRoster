@@ -378,7 +378,7 @@ would need a dual-read window instead.
 
 ## 12. Scope note
 
-`PROJECT_BRIEF.md` §1 asks only for two roles and seeded logins, both of which the current
+`docs/REQUIREMENTS.md` §1 asks only for two roles and seeded logins, both of which the current
 implementation already satisfies. This work is beyond the brief. It is justified by the
 brief's stated judging criterion — the product as a whole — and by the fact that a scheduler
 with no way to add a member is a demo rather than an application. The cost is real: roughly

@@ -45,11 +45,19 @@ describe('dashboard page realtime-refresh wiring', () => {
     // Fires from a setInterval tick or a broadcast callback, never a React
     // event handler — startTransition is what makes React treat the update
     // as a real pending navigation.
-    const src = readFileSync('components/realtime/week-realtime-sync.tsx', 'utf8')
+    const raw = readFileSync('components/realtime/week-realtime-sync.tsx', 'utf8')
+    // Comments stripped FIRST. This file explains `router.refresh()` in prose
+    // twice, and counting those makes the assertion below compare code against
+    // documentation — it failed on a file where every real call was correctly
+    // wrapped, which is worse than the vacuous check it replaced.
+    const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+
     const refreshCalls = src.match(/router\.refresh\(\)/g) ?? []
     expect(refreshCalls.length).toBeGreaterThan(0)
-    for (const _ of refreshCalls) {
-      expect(src).toContain('startTransition(() => router.refresh())')
-    }
+    // EVERY call wrapped, counted rather than sampled. The original looped over
+    // the calls asserting the same `toContain` each time, which passed as long
+    // as ONE wrapped call existed, however many bare ones sat beside it.
+    const wrapped = src.match(/startTransition\(\(\) => router\.refresh\(\)\)/g) ?? []
+    expect(wrapped.length).toBe(refreshCalls.length)
   })
 })

@@ -15,7 +15,7 @@ import { seedClaims } from '@/lib/seed/claim-seeder'
  * attractor and simultaneous saturation (FULL) or simultaneous zero (EMPTY)
  * are inherently rarer.
  */
-export const FILL_RATIO = 0.2
+const FILL_RATIO = 0.2
 
 export interface RunSeedOptions {
   /** Pinned "now" for claim seeding, mainly for deterministic tests. */

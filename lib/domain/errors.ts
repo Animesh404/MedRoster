@@ -1,18 +1,15 @@
-export const RULE_CODES = [
-  'SHIFT_IN_PAST',
-  'PROFESSION_NOT_REQUIRED',
-  'ROLE_FULL',
-  'OVERLAP',
-  'ALREADY_CLAIMED',
-  'NOT_CLAIMED',
-  'VERSION_CONFLICT',
-  'FORBIDDEN',
-  'NOT_FOUND',
-  'INVALID_INPUT',
-  'BUSY',
-] as const
-
-export type RuleCode = (typeof RULE_CODES)[number]
+export type RuleCode =
+  | 'SHIFT_IN_PAST'
+  | 'PROFESSION_NOT_REQUIRED'
+  | 'ROLE_FULL'
+  | 'OVERLAP'
+  | 'ALREADY_CLAIMED'
+  | 'NOT_CLAIMED'
+  | 'VERSION_CONFLICT'
+  | 'FORBIDDEN'
+  | 'NOT_FOUND'
+  | 'INVALID_INPUT'
+  | 'BUSY'
 
 export interface AppError {
   readonly code: RuleCode

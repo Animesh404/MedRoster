@@ -14,6 +14,21 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
   ]),
   {
+    // A leading underscore is the deliberate "this parameter exists to satisfy
+    // a signature I do not control" marker — test doubles standing in for a
+    // Supabase admin call, for instance, must accept the arguments the real
+    // API passes whether or not the double reads them. Without this, the only
+    // ways to keep the lint clean are to lie about the signature or to litter
+    // disable comments, and the go-live gate runs eslint at --max-warnings 0.
+    rules: {
+      "@typescript-eslint/no-unused-vars": ["warn", {
+        argsIgnorePattern: "^_",
+        varsIgnorePattern: "^_",
+        caughtErrorsIgnorePattern: "^_",
+      }],
+    },
+  },
+  {
     // Playwright fixtures are declared as `async ({ page }, use) => { … use(x) }`.
     // That `use` is Playwright's fixture-provider callback, not React's `use`
     // hook, but rules-of-hooks matches on the bare identifier and flags every

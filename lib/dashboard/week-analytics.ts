@@ -20,13 +20,13 @@ export interface DayBucket {
  */
 export type DaySpineStatus = CoverageStatus | 'NONE'
 
-export interface DayStat {
+interface DayStat {
   date: Date
   openSlots: number
   worstStatus: DaySpineStatus
 }
 
-export interface RoleStat {
+interface RoleStat {
   profession: Profession
   openSlots: number
 }

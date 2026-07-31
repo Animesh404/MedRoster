@@ -1,0 +1,277 @@
+# Go-live gate.
+#
+# The only path to production. Vercel's own Git integration is switched off for
+# `main` in vercel.json (`git.deploymentEnabled.main: false`), so a merge does
+# NOT deploy by itself — it deploys only by passing through here. Without that
+# setting the gate would be decorative: Vercel would ship the commit the moment
+# it landed and this workflow would grade an artefact that was already live.
+#
+# Four stages, cheapest first, and nothing downstream runs if an earlier one
+# fails:
+#
+#   verify      — types, lint, unit tests, build
+#   acceptance  — the real app against a real database and a real browser,
+#                 then the SLO budgets in docs/SLO.md
+#   deploy      — vercel deploy --prod
+#   verify-live — the SLOs again, against production, including SLI 4: the
+#                 running instance must report the commit this run built
+#
+# The last stage is the one that is easy to leave out and the one that catches
+# the failure nobody expects — a green pipeline proves the artefact was good,
+# not that it reached production.
+
+name: Go-live gate
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Never two deploys at once, and never cancel one midway: a cancelled
+  # `vercel deploy` can leave the alias pointing at a half-promoted build.
+  # This is the opposite of ci.yml's setting, deliberately — there, a
+  # superseded test run is worth abandoning; here, an abandoned deploy is
+  # worse than a slow one.
+  group: go-live
+  cancel-in-progress: false
+
+env:
+  APP_ENV: development
+  CLINIC_TZ: Europe/London
+  SEED_PASSWORD: medroster123
+  # Local to the runner and thrown away with it. Real secrets live in the
+  # repository's GitHub Actions secrets and Vercel's own environment.
+  CRON_SECRET: gate-only-not-a-real-secret
+
+jobs:
+  verify:
+    name: 1 · verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DATABASE_URL_DEV: postgresql://postgres:postgres@localhost:5432/medroster
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npx prisma generate
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        # --max-warnings 0: a warning that nothing fails on is a warning
+        # nobody fixes. eslint.config.mjs already allows the deliberate
+        # underscore-prefixed unused parameters, so zero is achievable.
+        run: npx eslint . --max-warnings 0
+
+      - name: Unit and integration tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  acceptance:
+    name: 2 · acceptance (e2e + SLOs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Start Supabase
+        # The e2e specs sign in as real seeded accounts, so this needs a real
+        # auth server rather than a stub — a login path exercised against a
+        # fake is the one path where a fake proves least.
+        #
+        # The excluded services are the ones MedRoster never touches. Starting
+        # them costs several minutes of image pulls and, in this project's
+        # experience, is where `supabase start` hangs unhealthy.
+        run: |
+          npx supabase start \
+            -x studio,imgproxy,edge-runtime,logflare,vector,supavisor,storage-api,postgres-meta
+
+      - name: Export Supabase credentials
+        # `supabase status -o env` prints the keys this instance generated.
+        # They differ per run, so they cannot be hardcoded.
+        run: |
+          npx supabase status -o env > /tmp/supabase.env
+          {
+            echo "DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres"
+            echo "NEXT_PUBLIC_SUPABASE_URL=$(grep '^API_URL=' /tmp/supabase.env | cut -d= -f2- | tr -d '"')"
+            echo "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$(grep '^ANON_KEY=' /tmp/supabase.env | cut -d= -f2- | tr -d '"')"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$(grep '^SERVICE_ROLE_KEY=' /tmp/supabase.env | cut -d= -f2- | tr -d '"')"
+            echo "APP_URL=http://localhost:3100"
+          } >> "$GITHUB_ENV"
+
+      - name: Migrate and seed
+        # The same importer that runs in production, against the same dirty
+        # CSVs, so the browser suite drives the data a real deployment has
+        # rather than a hand-built fixture that cannot reproduce an import bug.
+        run: |
+          npx prisma generate
+          npx prisma migrate deploy
+          npm run db:seed
+
+      - name: Build and start
+        run: |
+          npm run build
+          npm start -- -p 3100 &
+          echo "Waiting for the server to become ready…"
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:3100/api/health > /dev/null 2>&1; then
+              echo "Ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Server never became ready — /api/health did not return 200 within 60s"
+          curl -sS -i http://localhost:3100/api/health || true
+          exit 1
+
+      - name: Install Chrome
+        # playwright.config.ts pins `channel: 'chrome'` — real Google Chrome,
+        # not the bundled Chromium — so the suite exercises the browser people
+        # actually use.
+        run: npx playwright install chrome --with-deps
+
+      - name: End-to-end suite
+        env:
+          BASE_URL: http://localhost:3100
+        run: npm run test:e2e
+
+      - name: SLO budgets
+        # docs/SLO.md holds the numbers and the reasoning. Runs after the
+        # browser suite so the server is warm in the same way a live one is.
+        env:
+          BASE_URL: http://localhost:3100
+        run: npm run slo
+
+      - name: Upload Playwright artefacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  deploy:
+    name: 3 · deploy to Vercel
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [verify, acceptance]
+    # workflow_dispatch can be used to re-run the gate without shipping; only a
+    # real merge to main deploys.
+    if: github.event_name == 'push'
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check deploy credentials are present
+        # Without this the CLI fails deep inside a build step with a message
+        # about linking a project, which reads as a build problem rather than a
+        # missing secret.
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          missing=""
+          [ -n "$VERCEL_TOKEN" ]      || missing="$missing VERCEL_TOKEN"
+          [ -n "$VERCEL_ORG_ID" ]     || missing="$missing VERCEL_ORG_ID"
+          [ -n "$VERCEL_PROJECT_ID" ] || missing="$missing VERCEL_PROJECT_ID"
+          if [ -n "$missing" ]; then
+            echo "Missing repository secrets:$missing"
+            echo "Set them under Settings → Secrets and variables → Actions."
+            echo "VERCEL_ORG_ID and VERCEL_PROJECT_ID are in .vercel/project.json after 'vercel link'."
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - name: Pull Vercel production environment
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: npx vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Apply database migrations
+        # Before the new code is serving, not after. A deployment whose code
+        # expects a column its database does not have is an outage, and the
+        # window between "new code live" and "migration applied" is exactly
+        # when that happens.
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_PROD }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "DATABASE_URL_PROD secret is not set — refusing to deploy code"
+            echo "whose migrations have not been applied."
+            exit 1
+          fi
+          npx prisma migrate deploy
+
+      - name: Build
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: npx vercel build --prod --token="$VERCEL_TOKEN"
+
+      - name: Deploy
+        id: deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          url=$(npx vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Deployed to $url"
+
+  verify-live:
+    name: 4 · verify production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: deploy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: SLOs against production
+        # EXPECT_COMMIT turns on SLI 4. The live instance has to report the
+        # commit this run built — otherwise the pipeline was green for an
+        # artefact that is not the one serving traffic, which a green deploy
+        # step alone cannot tell you.
+        env:
+          BASE_URL: ${{ needs.deploy.outputs.url }}
+          EXPECT_COMMIT: ${{ github.sha }}
+        run: npm run slo
+
+      - name: Report
+        run: echo "Live and verified at ${{ needs.deploy.outputs.url }} (commit ${GITHUB_SHA:0:7})"

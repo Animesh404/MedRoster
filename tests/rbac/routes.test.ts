@@ -9,6 +9,7 @@ vi.mock('@/lib/auth/session', () => ({ currentSessionUser: () => Promise.resolve
 
 const { WITH_AUTH_BRAND } = await import('@/lib/auth/with-auth')
 const { WITH_CRON_BRAND } = await import('@/lib/auth/with-cron-auth')
+const { WITH_PUBLIC_BRAND } = await import('@/lib/auth/with-public')
 
 // @types/node is pinned to v20 here, which predates `fs.globSync` (added in the
 // Node 22 typings). The function exists at runtime on our Node version; this
@@ -53,6 +54,14 @@ describe('API route authorisation coverage', () => {
       reason: 'Invoked by Vercel Cron, which carries no user session; guarded by CRON_SECRET.',
       brand: WITH_CRON_BRAND,
     },
+    'app/api/health/route.ts': {
+      reason:
+        'Readiness probe for the platform and the go-live gate. Requiring a session would '
+        + 'make it useless: the caller is a load balancer, and an unhealthy instance is often '
+        + 'unhealthy precisely because sessions cannot be resolved. Exposes no roster data — '
+        + 'only whether the database answers, and which build is running.',
+      brand: WITH_PUBLIC_BRAND,
+    },
   }
 
   const files = allFiles.filter((f) => !(f in UNAUTHENTICATED_BY_DESIGN))
@@ -62,7 +71,7 @@ describe('API route authorisation coverage', () => {
   // quiet one-line edit buried in an unrelated diff — it has to be stated twice,
   // deliberately.
   it('has exactly the exemptions it is meant to have', () => {
-    expect(exemptPaths).toEqual(['app/api/cron/prune/route.ts'])
+    expect(exemptPaths).toEqual(['app/api/cron/prune/route.ts', 'app/api/health/route.ts'])
   })
 
   // A typo'd path would silently exempt nothing and guard nothing.

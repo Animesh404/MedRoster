@@ -16,4 +16,3 @@ export const inviteMemberSchema = z.object({
   { message: 'Staff need a profession; managers must not have one.', path: ['profession'] },
 )
 
-export type InviteMemberInput = z.infer<typeof inviteMemberSchema>

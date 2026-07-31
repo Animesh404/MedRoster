@@ -15,14 +15,6 @@ export const pageQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
 })
 
-export const errorSchema = z.object({
-  error: z.object({
-    code: z.string(),
-    message: z.string(),
-    meta: z.record(z.string(), z.unknown()).optional(),
-  }),
-})
-
 /** Client-generated id used to suppress a caller's own realtime echo (§7.1). */
 export const mutationIdSchema = z.string().min(8).max(64).optional()
 

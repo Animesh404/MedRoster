@@ -31,7 +31,7 @@ const EMAIL_SHAPE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
  * per-row `Issue.message`/`field` below stays specific ("Staff id is not a
  * whole number.", field: 'staff_id').
  */
-export const idRule = createFieldRule<string, number>({
+const idRule = createFieldRule<string, number>({
   emits: [
     { code: 'INVALID_ID', field: 'staff_id / shift_id', severity: 'FATAL', describe: 'Id is not a whole number.' },
   ],
@@ -44,7 +44,7 @@ export const idRule = createFieldRule<string, number>({
   },
 })
 
-export const nameRule = createFieldRule<string, string>({
+const nameRule = createFieldRule<string, string>({
   emits: [
     { code: 'BLANK_NAME', field: 'full_name', severity: 'FATAL',
       describe: 'Name is empty; the row cannot create a staff member.' },
@@ -61,7 +61,7 @@ export const nameRule = createFieldRule<string, string>({
   },
 })
 
-export const professionRule = createFieldRule<string, Profession>({
+const professionRule = createFieldRule<string, Profession>({
   emits: [
     { code: 'UNKNOWN_PROFESSION', field: 'role', severity: 'FATAL',
       describe: 'Role does not match any profession this clinic schedules.' },
@@ -86,7 +86,7 @@ export const professionRule = createFieldRule<string, Profession>({
   },
 })
 
-export const emailRule = createFieldRule<string, string>({
+const emailRule = createFieldRule<string, string>({
   emits: [
     { code: 'BLANK_EMAIL', field: 'email', severity: 'FATAL',
       describe: 'Email is empty; it is the login identity so the row cannot be imported.' },

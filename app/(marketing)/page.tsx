@@ -342,7 +342,7 @@ function Footer() {
     <footer className="relative mt-24 overflow-hidden border-t border-border">
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-8 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <p className="text-sm text-muted-foreground">
-          &copy; {new Date().getFullYear()} MedRoster. A clinic shift scheduler built as a take-home project.
+          &copy; {new Date().getFullYear()} MedRoster. Shift scheduling for clinics.
         </p>
         <Link href="/login" className="text-sm font-medium text-brand-deep hover:underline dark:text-brand-mid">
           Sign in

@@ -11,7 +11,7 @@ const OUTCOME_STYLES: Record<ImportRowView['outcome'], { label: string; chip: st
 }
 
 /**
- * The Import Report's row table — the brief's explicit deliverable: for
+ * The Import Report's row table — a stated requirement (§4): for
  * every rejected or merged row, the raw source line, the outcome, and every
  * issue as `message` with `before → after` when the row was repaired rather
  * than just rejected outright.

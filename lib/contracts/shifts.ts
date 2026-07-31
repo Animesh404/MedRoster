@@ -157,7 +157,3 @@ export const shiftDetailSchema = z.object({
   })),
 })
 
-export type CreateShiftBody = z.infer<typeof createShiftSchema>
-export type UpdateShiftBody = z.infer<typeof updateShiftSchema>
-export type EditPreviewResponse = z.infer<typeof editPreviewSchema>
-export type DeletePreviewResponse = z.infer<typeof deletePreviewSchema>

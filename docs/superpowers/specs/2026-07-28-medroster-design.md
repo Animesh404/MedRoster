@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-28
 **Status:** Approved
-**Source brief:** `PROJECT_BRIEF.md` (Fullstack Take-Home: Clinic Shift Scheduler, 4 days)
+**Source requirements:** [`docs/REQUIREMENTS.md`](../../REQUIREMENTS.md)
 
 A clinic shift scheduler. Managers create shifts and assign staff; staff claim shifts
 subject to business rules the server enforces. The clinic's existing spreadsheet exports
@@ -523,7 +523,7 @@ creation path.
 
 ---
 
-## 11. Deliverables
+## 11. What ships
 
 - Live URL on Vercel, pre-seeded via the importer.
 - `README.md` — stack, `docker compose up`, `npm test`, seeded credentials (manager +
