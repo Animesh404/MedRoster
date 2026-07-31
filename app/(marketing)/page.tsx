@@ -13,6 +13,9 @@ import { SlotMeter } from '@/components/slot-meter'
 import { StatDot } from '@/components/stat-dot'
 import { buildMeter } from '@/lib/ui/tokens'
 import { getRosterStats } from '@/lib/ui/stats'
+import { ThemeToggle } from '@/components/theme-toggle'
+import { currentTheme } from '@/lib/theme/server'
+import type { ThemePreference } from '@/lib/theme/preference'
 
 export const metadata: Metadata = {
   title: 'MedRoster — Find the gaps. Fill them fast.',
@@ -92,6 +95,7 @@ export default async function MarketingPage() {
   // anywhere — the page looked like a clinic with no staff and no shifts, and
   // the only trace was Prisma's own log line. Log it as ours, and drop the band
   // entirely below rather than showing a row of dashes.
+  const theme = await currentTheme()
   const stats = await getRosterStats().catch((err: unknown) => {
     console.error('[marketing] roster stats unavailable:', err)
     return null
@@ -99,7 +103,7 @@ export default async function MarketingPage() {
 
   return (
     <div className="flex flex-col">
-      <MarketingNav />
+      <MarketingNav theme={theme} />
 
       {/* Hero */}
       <section className="hero-gradient relative overflow-hidden px-4 pt-10 pb-28 text-white sm:px-6 sm:pt-16 sm:pb-36">
@@ -318,7 +322,7 @@ function Stat({ value, label }: { value: number; label: string }) {
   )
 }
 
-function MarketingNav() {
+function MarketingNav({ theme }: { theme: ThemePreference }) {
   return (
     <header className="sticky top-0 z-30 border-b border-border/60 bg-background/80 backdrop-blur">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6">
@@ -331,7 +335,13 @@ function MarketingNav() {
           </span>
           MedRoster
         </Link>
-        <Button nativeButton={false} render={<Link href="/login">Sign in</Link>} />
+        <div className="flex items-center gap-1">
+          {/* No `persist`: there is no account to save to out here. The cookie
+              carries the choice, and it survives signing in — the account value
+              only takes over on a browser that has no cookie yet. */}
+          <ThemeToggle current={theme} />
+          <Button nativeButton={false} render={<Link href="/login">Sign in</Link>} />
+        </div>
       </div>
     </header>
   )

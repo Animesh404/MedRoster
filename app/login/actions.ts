@@ -3,6 +3,7 @@
 import { redirect } from 'next/navigation'
 import { prisma } from '@/lib/db/client'
 import { checkRoster } from '@/lib/auth/roster-gate'
+import { adoptStoredTheme } from '@/lib/theme/server'
 import { safeNextPath } from '@/lib/auth/safe-redirect'
 import { createSupabaseServerClient } from '@/lib/supabase/server'
 
@@ -45,6 +46,11 @@ export async function loginAction(_prevState: LoginState, formData: FormData): P
     await supabase.auth.signOut()
     return { error: gate.reason }
   }
+
+  // AFTER the roster gate, never before: writing a rejected sign-in's theme
+  // would leak that the account exists, and would restyle the browser of
+  // somebody just refused entry.
+  await adoptStoredTheme(profile?.themePreference ?? null)
 
   redirect(safeNextPath(next))
 }

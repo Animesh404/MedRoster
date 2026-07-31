@@ -2,6 +2,8 @@ import Link from 'next/link'
 import type { ReactNode } from 'react'
 import { can, type Permission, type Principal } from '@/lib/auth/permissions'
 import { UserMenu } from '@/components/user-menu'
+import { ThemeToggle } from '@/components/theme-toggle'
+import type { ThemePreference } from '@/lib/theme/preference'
 
 interface NavItem {
   href: string
@@ -47,11 +49,13 @@ export function AppShell({
   principal,
   name,
   email,
+  theme,
   children,
 }: {
   principal: Principal
   name: string
   email: string
+  theme: ThemePreference
   children: ReactNode
 }) {
   const items = NAV_ITEMS.filter(
@@ -90,7 +94,12 @@ export function AppShell({
             ))}
           </nav>
 
-          <UserMenu name={name} email={email} roleLabel={roleLabel} />
+          <div className="flex items-center gap-1">
+            {/* `persist` because there is a signed-in member here whose choice
+                should follow them to another browser. */}
+            <ThemeToggle current={theme} persist />
+            <UserMenu name={name} email={email} roleLabel={roleLabel} />
+          </div>
         </div>
 
         <nav aria-label="Main" className="flex items-center gap-1 overflow-x-auto px-4 pb-2 sm:hidden">
