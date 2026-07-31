@@ -77,6 +77,18 @@ jobs:
 
       - run: npm ci
 
+      - name: Generate Next types
+        # `next-env.d.ts` is gitignored (Next's own template ignores it) and is
+        # what declares the ambient modules for static image imports, via its
+        # reference to `next/image-types/global`. It only appears once a Next
+        # command has run — so a fresh clone type-checks BEFORE anything has
+        # generated it, and `import hero from '@/assets/images/hero.jpg'` fails
+        # with "Cannot find module". Locally it passes, because a build has
+        # always already happened.
+        #
+        # `typegen` does exactly this and nothing else, so it stays cheap.
+        run: npx next typegen
+
       - name: Typecheck
         run: npx tsc --noEmit
 
