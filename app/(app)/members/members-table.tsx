@@ -231,6 +231,14 @@ export function MembersTable({
     )
   }
 
+  function reactivate(member: Member) {
+    void runMutation(
+      String(member.id),
+      () => fetch(`/api/members/${member.id}/reactivate`, { method: 'POST' }),
+      'Could not reactivate that member. Please try again.',
+    )
+  }
+
   const formBusy = busy.form ?? false
 
   return (
@@ -375,6 +383,23 @@ export function MembersTable({
                       onClick={() => deactivate(member)}
                     >
                       Deactivate
+                    </Button>
+                  )}
+                  {/* Deactivation used to be a one-way door: a deactivated row
+                   *  offered no actions at all, so a misclick permanently
+                   *  removed someone with no path back short of a database
+                   *  edit. Reactivating restores their access but NOT the
+                   *  shifts deactivation released — those belong to whoever
+                   *  picked them up since. */}
+                  {member.status === 'deactivated' && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={rowBusy || staleStatus}
+                      onClick={() => reactivate(member)}
+                    >
+                      Reactivate
                     </Button>
                   )}
                 </TableCell>
