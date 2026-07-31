@@ -33,6 +33,13 @@ concurrency:
   # This is the opposite of ci.yml's setting, deliberately — there, a
   # superseded test run is worth abandoning; here, an abandoned deploy is
   # worse than a slow one.
+  #
+  # Note what this does NOT promise: a run still QUEUED when a newer commit
+  # arrives is cancelled, because GitHub keeps only the most recent pending run
+  # per group. So merging three commits in quick succession deploys the third,
+  # not each in turn. That is the behaviour you want from a deploy pipeline —
+  # but it does mean an intermediate commit can show as `cancelled` without
+  # anything being wrong.
   group: go-live
   cancel-in-progress: false
 

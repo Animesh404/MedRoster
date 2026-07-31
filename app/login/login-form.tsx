@@ -31,7 +31,6 @@ export function LoginForm({
   const [password, setPassword] = useState('')
   const [magicLinkPending, setMagicLinkPending] = useState(false)
   const [magicLinkSent, setMagicLinkSent] = useState(false)
-  const [googlePending, setGooglePending] = useState(false)
 
   function fillDemo(account: (typeof DEMO_ACCOUNTS)[number]) {
     setEmail(account.email)
@@ -57,16 +56,6 @@ export function LoginForm({
     }
     setMagicLinkPending(false)
     setMagicLinkSent(true)
-  }
-
-  async function handleGoogle() {
-    setGooglePending(true)
-    const supabase = createSupabaseBrowserClient()
-    await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: `${window.location.origin}/auth/callback` },
-    })
-    setGooglePending(false)
   }
 
   return (
@@ -146,15 +135,20 @@ export function LoginForm({
             {magicLinkPending ? 'Sending…' : 'Email me a sign-in link'}
           </Button>
         )}
-        <Button
-          type="button"
-          variant="outline"
-          className="w-full"
-          disabled={googlePending}
-          onClick={handleGoogle}
-        >
-          {googlePending ? 'Redirecting…' : 'Continue with Google'}
-        </Button>
+        {/*
+          * No "Continue with Google" button, deliberately.
+          *
+          * The provider is not enabled on the Supabase project, so the button
+          * that used to sit here returned a 400 from /auth/v1/authorize the
+          * moment anyone clicked it — an advertised way in that could not let
+          * anyone in. Offering a broken door is worse than offering one fewer
+          * door.
+          *
+          * The OAuth plumbing it fed (app/auth/callback/route.ts) is kept: it
+          * is inert without a provider, and it carries the roster check that
+          * makes OAuth safe to turn on. Enabling Google is a decision about
+          * identity linking, not a toggle — see DECISIONS.md.
+          */}
       </div>
 
       <Card size="sm">
