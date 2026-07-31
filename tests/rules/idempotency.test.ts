@@ -60,16 +60,60 @@ describe('claim idempotency', () => {
     expect(await db.claim.count({ where: { shiftId: shift.id, userId: nurse.id } })).toBe(1)
   })
 
-  it('does not emit a second realtime event on the replayed call', async () => {
+  // Asserted against an absolute 1, and paired with the replayed response.
+  // Comparing "after" to "before" would hold even if the FIRST call had emitted
+  // nothing, and the count alone passes against the pre-fix code too (which
+  // returned ALREADY_CLAIMED and also emitted nothing) — so neither half proves
+  // a replay on its own.
+  it('replays the response and emits exactly one event, not two', async () => {
     const { db, shift, nurses } = await seedShiftAndNurses()
     const nurse = nurses[0]!
     const args = { db, shiftId: shift.id, userId: nurse.id, actorId: nurse.id, mutationId: 'mut-retry-2' }
 
-    await assignClaim(args)
-    const afterFirst = await db.eventOutbox.count({ where: { type: 'shift.claimed' } })
-    await assignClaim(args)
+    const first = await assignClaim(args)
+    const retry = await assignClaim(args)
 
-    expect(await db.eventOutbox.count({ where: { type: 'shift.claimed' } })).toBe(afterFirst)
+    expect(retry).toEqual(first)
+    expect(await db.eventOutbox.count({ where: { type: 'shift.claimed' } })).toBe(1)
+  })
+
+  // The op half of the scope. Only the user half was covered before, so a
+  // fingerprint that ignored the operation would have passed unnoticed.
+  it('refuses a claim key presented for a release', async () => {
+    const { db, shift, nurses } = await seedShiftAndNurses()
+    const nurse = nurses[0]!
+    await assignClaim({
+      db, shiftId: shift.id, userId: nurse.id, actorId: nurse.id, mutationId: 'crossed-op',
+    })
+
+    const result = await unassignClaim({
+      db, shiftId: shift.id, userId: nurse.id, mutationId: 'crossed-op',
+    })
+
+    expect(result).toMatchObject({ code: 'INVALID_INPUT' })
+    // And the claim is untouched — a refused key must not half-apply.
+    expect(await db.claim.count({ where: { shiftId: shift.id, userId: nurse.id } })).toBe(1)
+  })
+
+  // A manager assigning and a nurse self-claiming are different requests, so a
+  // rejection recorded for one must not be handed to the other.
+  it('scopes a key to the actor, not just the shift and user', async () => {
+    const db = await getTestDb()
+    const manager = await db.user.create({
+      data: { email: 'mgr@c.test', name: 'Manager', role: 'MANAGER', profession: null },
+    })
+    const { shift, nurses } = await seedShiftAndNurses()
+    const nurse = nurses[0]!
+
+    const byManager = await assignClaim({
+      db, shiftId: shift.id, userId: nurse.id, actorId: manager.id, mutationId: 'who-acted',
+    })
+    expect(byManager).toMatchObject({ claimId: expect.any(Number) })
+
+    const bySelf = await assignClaim({
+      db, shiftId: shift.id, userId: nurse.id, actorId: nurse.id, mutationId: 'who-acted',
+    })
+    expect(bySelf).toMatchObject({ code: 'INVALID_INPUT' })
   })
 
   it('replays a release the same way, instead of reporting NOT_CLAIMED', async () => {
@@ -170,5 +214,9 @@ describe('claim idempotency', () => {
     expect(a).toMatchObject({ claimId: expect.any(Number) })
     expect(await db.claim.count({ where: { shiftId: shift.id, userId: nurse.id } })).toBe(1)
     expect(await db.eventOutbox.count({ where: { type: 'shift.claimed' } })).toBe(1)
+    // Exactly one record: if the two calls had failed to interleave this would
+    // still be 1, but if the replay check ever moved outside the lock both
+    // would miss, both would insert, and the second would die on the PK.
+    expect(await db.mutationOutcome.count()).toBe(1)
   })
 })

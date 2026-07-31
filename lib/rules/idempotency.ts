@@ -30,12 +30,24 @@ export type MutationOp = 'claim' | 'release'
  * be worse than useless: it could hand one nurse another nurse's "you hold this
  * shift" answer for a shift they never claimed.
  */
-export function mutationScope(op: MutationOp, shiftId: number, userId: number): string {
-  return `${op}:${shiftId}:${userId}`
+export function mutationScope(
+  op: MutationOp,
+  shiftId: number,
+  userId: number,
+  actorId?: number,
+): string {
+  // `actorId` matters: "manager M assigns nurse N" and "nurse N self-claims"
+  // are different requests with the same (shift, user). Replaying a SUCCESS
+  // across them is harmless, but replaying a REJECTION is not — a nurse
+  // self-claiming could be handed "The assigning manager no longer exists.",
+  // which is nonsense for the request they made.
+  return `${op}:${shiftId}:${userId}:${actorId ?? 'self'}`
 }
 
+// Written for the person holding the phone, like every other message in the
+// catalog — not for the engineer who chose the field name.
 export const MUTATION_SCOPE_MISMATCH =
-  'That request id has already been used for a different action. Please retry the action itself.'
+  'That action could not be repeated. Please refresh and try again.'
 
 /**
  * Looks up a previously recorded outcome for `mutationId`.
@@ -63,11 +75,15 @@ export async function findRecordedOutcome<T>(
 /**
  * Records the outcome of a mutation, in the caller's transaction.
  *
- * Only outcomes of transactions that COMMIT are recorded — which is exactly
- * what calling this inside the transaction body guarantees. A capacity failure
- * (`BUSY`) never runs the body at all, so nothing is written for it; that
- * matters, because caching a transient "server was busy" answer against a key
- * would make the client's retry permanently useless.
+ * Only outcomes of transactions that COMMIT are recorded, and the guarantee is
+ * the ROLLBACK, not the ordering: a capacity failure discards this write along
+ * with everything else, whether it struck before the body ran (P2028 on
+ * `maxWait`) or after (P2028 on `timeout`). Stating it as "the body never runs"
+ * would be wrong for the second case and would quietly stop being true if
+ * anyone reclassified a retry code.
+ *
+ * It matters because caching a transient "server was busy" answer against a key
+ * would make the client's own retry permanently useless.
  */
 export async function recordOutcome(
   tx: Prisma.TransactionClient,

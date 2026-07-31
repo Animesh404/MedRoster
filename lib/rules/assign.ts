@@ -76,7 +76,7 @@ export async function assignClaim(
         // Replay check FIRST, and inside the lock. Outside it, two simultaneous
         // retries of one key both miss, both do the work, and the second dies
         // on the primary key — turning a benign retry into an error.
-        const scope = mutationScope('claim', input.shiftId, input.userId)
+        const scope = mutationScope('claim', input.shiftId, input.userId, input.actorId)
         if (input.mutationId !== undefined) {
           const seen = await findRecordedOutcome<{ claimId: number } | AppError>(
             tx, input.mutationId, scope,
@@ -169,14 +169,27 @@ export async function assignClaim(
     TX_OPTIONS,
     ).catch((err: unknown) => {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        // Unreachable while the advisory lock holds — a hit here is evidence
-        // of a lock regression, not a benign duplicate submit, so it must
-        // leave a trace rather than being silently presented as one.
+        const target = err.meta?.target as string[] | string | undefined
+        const hit = Array.isArray(target) ? target.join(',') : (target ?? '')
+
+        // MutationOutcome's PK is keyed on mutationId, which the advisory lock
+        // — keyed on (shift, user) — does NOT cover. Two concurrent requests
+        // reusing one key for DIFFERENT requests therefore take different
+        // locks, both miss the replay lookup, and the second collides here.
+        // That is the same client bug `scopeMismatchError` describes, just
+        // reached by a race instead of sequentially, so it gets the same
+        // answer. Crucially it is NOT evidence of a lock regression, and must
+        // not raise that alarm.
+        if (hit.includes('mutationId')) return scopeMismatchError()
+
+        // Claim(shiftId, userId) IS covered by the lock, so a hit here really
+        // is unreachable-in-theory and worth a trace rather than a silent
+        // conversion.
         console.warn(
-          'assignClaim: unique-constraint backstop fired — advisory lock may be ineffective',
+          'assignClaim: Claim unique-constraint backstop fired — advisory lock may be ineffective',
           err.meta,
         )
-        if ((err.meta?.target as string[] | undefined)?.includes('userId')) {
+        if (hit.includes('userId')) {
           return createAppError('ALREADY_CLAIMED', 'You already hold this shift.')
         }
         throw err
@@ -248,6 +261,16 @@ export async function unassignClaim(input: UnassignInput): Promise<{ ok: true } 
         return outcome
       }),
     TX_OPTIONS,
-    ),
+    ).catch((err: unknown) => {
+      // Mirror of assignClaim's handler: a reused key racing against a
+      // different request collides on MutationOutcome's PK. Without this the
+      // same client bug surfaces here as an unhandled 500.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        const target = err.meta?.target as string[] | string | undefined
+        const hit = Array.isArray(target) ? target.join(',') : (target ?? '')
+        if (hit.includes('mutationId')) return scopeMismatchError()
+      }
+      throw err
+    }),
   ).catch(toBusyError)
 }

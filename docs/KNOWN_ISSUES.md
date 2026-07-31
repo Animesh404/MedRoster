@@ -82,8 +82,11 @@ to a flaky connection, and have the client's retry answered with `ALREADY_CLAIME
 ended up looking at a shift marked unclaimed that they actually held. Releasing a shift had the
 mirror bug via `NOT_CLAIMED`.
 
-Both are now keyed on the client's `mutationId` (which already existed, for realtime
-echo-suppression) against a `MutationOutcome` table. See "Claim retries are idempotent" below.
+Both halves are now in place — the server records and replays outcomes keyed on the client's
+`mutationId`, and the client retries once with that **same** key when a request never lands.
+Both were needed: a review caught that the server work alone fixed nothing a nurse would
+notice, because the client minted a fresh key on every attempt and so never presented a retry
+at all. See "Claim retries are idempotent" below.
 
 ## ~~No reactivation for a deactivated member~~ — FIXED
 
@@ -204,6 +207,13 @@ Three properties worth preserving if this is ever touched:
 A key presented for a *different* request (different operation, shift, or user) is refused
 with `INVALID_INPUT` rather than replayed — one nurse's key must never hand them another
 nurse's answer.
+
+**Cost, measured rather than assumed:** the replay `SELECT` and the outcome `INSERT` both sit
+inside the shift's advisory lock, on the losing path as well as the winning one — which
+directly inflates the queue depth `maxWait: 15_000` was sized against. A 50-claimant burst
+carrying keys finishes in ~750ms with zero `BUSY`, roughly 20× inside the limit.
+`tests/concurrency/burst-keyed.test.ts` is the guard; every other concurrency test passes no
+key and therefore still measures the old path.
 
 **The open part:** `MutationOutcome` grows by one row per claim/release and is never pruned.
 At clinic scale that is slow — hundreds of rows a week — but it is unbounded. It is indexed on

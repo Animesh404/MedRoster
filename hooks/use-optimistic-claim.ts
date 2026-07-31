@@ -60,15 +60,41 @@ export function useOptimisticClaim(
     const mutationId = newMutationId()
     params.onMutationStart?.(mutationId)
 
-    const res = next
-      ? await fetch(`/api/shifts/${shiftId}/claims`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mutationId }),
-        })
-      : await fetch(`/api/shifts/${shiftId}/claims/${params.userId}?mutationId=${mutationId}`, {
-          method: 'DELETE',
-        })
+    const send = () =>
+      next
+        ? fetch(`/api/shifts/${shiftId}/claims`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mutationId }),
+          })
+        : fetch(`/api/shifts/${shiftId}/claims/${params.userId}?mutationId=${mutationId}`, {
+            method: 'DELETE',
+          })
+
+    let res: Response
+    try {
+      res = await send()
+    } catch {
+      // The request never landed an answer — dropped connection, backgrounded
+      // tab, proxy timeout. We cannot tell whether the server ran it, which is
+      // exactly why retrying is safe ONLY because the same `mutationId` is
+      // reused: the server replays the recorded outcome instead of re-running
+      // the rules (lib/rules/idempotency.ts). Minting a fresh id here would
+      // make this a second attempt, and a first attempt that had actually
+      // committed would answer ALREADY_CLAIMED — rolling the flip back and
+      // showing a shift as unclaimed that the nurse holds.
+      //
+      // Once only. A second failure is a connection that is down, not a blip,
+      // and hammering it helps nobody.
+      try {
+        res = await send()
+      } catch {
+        setPending(false)
+        setOptimistic(previous)
+        setError('Could not reach the server. Check your connection and try again.')
+        return
+      }
+    }
 
     setPending(false)
     if (!res.ok) {
