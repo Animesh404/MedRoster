@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
 import { encodeCursor } from '@/lib/db/paginate'
 
@@ -473,6 +473,16 @@ describe('PATCH & DELETE /api/shifts/:id — dryRun must not fail unsafe (IMP-5)
 
 // --- MIN-5: recurrence must not silently truncate at the 366-row cap -----
 describe('POST /api/shifts — recurrence bounds (MIN-5)', () => {
+  // Frozen so occurrence expansion stays in the future as the calendar advances.
+  // (Past-window validation in route.ts rejects any occurrence with startsAt <= now.)
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-08-01T12:00:00Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('rejects an untilDate more than a year out rather than silently clipping at 366 rows', async () => {
     await asManager()
     const res = await shiftsPost(req('POST', 'http://localhost/api/shifts', {
