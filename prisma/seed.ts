@@ -14,9 +14,11 @@ import { ensureAuthAccounts, type AuthAdminPort } from '@/lib/seed/auth-accounts
 import { listAllAuthUsers } from '@/lib/supabase/list-all-users'
 
 const SEED_PASSWORD = process.env.SEED_PASSWORD ?? 'medroster123'
+/** Pinned "now" for deterministic claim seeding — e2e fixtures assume this epoch. */
+const SEED_NOW = process.env.SEED_NOW ? new Date(process.env.SEED_NOW) : undefined
 
 async function main(): Promise<void> {
-  const result = await runSeed(prisma)
+  const result = await runSeed(prisma, SEED_NOW ? { now: SEED_NOW } : {})
 
   console.log('staff  ', result.staffStats)
   console.log('shifts ', result.shiftStats)

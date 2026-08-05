@@ -147,6 +147,13 @@ jobs:
         # The same importer that runs in production, against the same dirty
         # CSVs, so the browser suite drives the data a real deployment has
         # rather than a hand-built fixture that cannot reproduce an import bug.
+        #
+        # SEED_NOW pins claim seeding to the epoch the e2e fixtures were
+        # written against. Without it, shifts crossing from future to past
+        # between runs change which slots get claimed and the browser suite
+        # breaks on a calendar boundary even though nothing in the app changed.
+        env:
+          SEED_NOW: 2026-07-28T00:00:00Z
         run: |
           npx prisma migrate deploy
           npm run db:seed
