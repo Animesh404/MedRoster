@@ -52,9 +52,9 @@ test.describe('responsive dashboard', () => {
  *
  * It was `text-[18vw] sm:text-[12rem]` and clipped at both ends: ~45px over on
  * a phone, and 418px over on a 768px tablet, where the fixed 12rem takes effect
- * regardless of how narrow the screen is. `overflow-hidden` on the footer meant
- * this never registered as page-level overflow — the existing responsive test
- * passed throughout — it just quietly shaved the ends off a centred word.
+ * regardless of how narrow the screen is. `overflow-x-hidden` on the footer
+ * contains horizontal bleed without shaving the bottom off the glyphs — the
+ * old `overflow-hidden` plus `-mb-8` did that on phones.
  *
  * Two assertions, because the obvious one alone is satisfiable by a bug: a
  * wordmark that collapsed to the 16px body default would also measure as "not
@@ -71,15 +71,23 @@ test.describe('footer wordmark', () => {
         const el = [...document.querySelectorAll('footer p')]
           .find((p) => p.textContent?.trim() === 'MEDROSTER')
         if (!el) throw new Error('footer wordmark not found')
+        const footer = el.closest('footer')
+        if (!footer) throw new Error('footer not found')
+        const elRect = el.getBoundingClientRect()
+        const footerRect = footer.getBoundingClientRect()
         return {
           fontSize: parseFloat(getComputedStyle(el).fontSize),
           scrollWidth: el.scrollWidth,
           clientWidth: el.clientWidth,
+          bottomGap: footerRect.bottom - elRect.bottom,
         }
       })
 
-      // Not clipped.
+      // Not clipped horizontally.
       expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth)
+      // Nor vertically — the glyph box must sit inside the footer, with a
+      // little padding for safe-area/home-indicator breathing room.
+      expect(metrics.bottomGap).toBeGreaterThanOrEqual(0)
       // And still a display wordmark, not the 16px body default a dropped
       // Tailwind class silently leaves behind. An absolute floor rather than a
       // fraction of the viewport: the size is capped at 14rem, so a

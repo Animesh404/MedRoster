@@ -370,7 +370,7 @@ function MarketingNav({ theme }: { theme: ThemePreference }) {
 
 function Footer() {
   return (
-    <footer className="relative mt-24 overflow-hidden border-t border-border">
+    <footer className="relative mt-24 overflow-x-hidden border-t border-border">
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-8 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <p className="text-sm text-muted-foreground">
           &copy; {new Date().getFullYear()} MedRoster. Shift scheduling for clinics.
@@ -385,9 +385,11 @@ function Footer() {
         * It was `text-[18vw] sm:text-[12rem]`, and both halves clipped. These
         * nine glyphs need roughly 6.2x the font size in width, so 18vw
         * overflowed a phone by ~45px, and the fixed 12rem — which takes effect
-        * from 640px up — overflowed a 768px tablet by 418px. `overflow-hidden`
-        * on the footer meant none of that showed as page-level scroll; it just
-        * quietly shaved both ends off a centred word.
+        * from 640px up — overflowed a 768px tablet by 418px. `overflow-x-hidden`
+        * on the footer contains horizontal bleed without shaving the bottom off
+        * the glyphs. `overflow-hidden` plus `-mb-8` did that; Bricolage Grotesque
+        * also paints ~32px below a `leading-none` line box, so `pb-8` and a
+        * touch of line-height keep the wordmark inside the footer on phones.
         *
         * 15vw stays under the viewport at every width, and the 14rem cap stops
         * it running to 384px on an ultrawide. Verified by measuring computed
@@ -395,7 +397,7 @@ function Footer() {
         */}
       <p
         aria-hidden
-        className="pointer-events-none -mb-8 text-center font-display text-[min(15vw,14rem)] leading-none font-bold text-foreground/5 select-none"
+        className="pointer-events-none pb-8 text-center font-display text-[min(15vw,14rem)] leading-[1.05] font-bold text-foreground/5 select-none"
       >
         MEDROSTER
       </p>

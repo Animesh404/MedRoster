@@ -50,3 +50,11 @@ next-env.d.ts
 # Supabase CLI binary, downloaded by the `supabase` npm dev dependency.
 # 97MB — it must never be committed again (it was once, see git history).
 supabase-go
+
+# Understand Anything — generated graph artifacts (config + ignore are committed)
+.understand-anything/intermediate/
+.understand-anything/tmp/
+.understand-anything/.trash-*/
+.understand-anything/knowledge-graph.json
+.understand-anything/meta.json
+.understand-anything/fingerprints.json

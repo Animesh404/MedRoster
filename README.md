@@ -289,6 +289,13 @@ Locally, `npm run db:prune` does the same thing.
 Seed the target database once with `npm run db:seed`, so the data is present
 before the first request rather than being built on demand.
 
+## Codebase guide
+
+[`docs/CODEBASE_GUIDE.md`](docs/CODEBASE_GUIDE.md) is the one-stop onboarding
+doc: schema, routes, import pipeline, auth, concurrency, realtime, testing,
+and deployment — plus how to use the **Understand Anything** knowledge graph
+(`/understand` → `/understand-dashboard` in Cursor).
+
 ## Design
 
 `design/medroster.pen` holds the source design — 14 frames across desktop,
