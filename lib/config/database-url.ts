@@ -93,3 +93,61 @@ export function describeDatabaseTarget(url: string): 'local' | 'supabase' | 'oth
 export function redactDatabaseUrl(url: string): string {
   return url.replace(/(:\/\/[^:@/]+):[^@]*@/, '$1:***@')
 }
+
+/** Pool size for a long-lived host (docker compose, a local dev box, CI). */
+const POOL_MAX_DEFAULT = 20
+
+/**
+ * Pool size per instance on a serverless host. One, deliberately: the platform
+ * pooler in front of Postgres is doing the pooling, and a per-instance pool
+ * competing with it is what causes exhaustion rather than what prevents it.
+ */
+const POOL_MAX_SERVERLESS = 1
+
+/**
+ * How many Postgres connections one process may hold.
+ *
+ * Split from a single constant because the right number is a property of the
+ * DEPLOYMENT, not of the app, and the two deployments want opposite things:
+ *
+ *  - Locally, 20 is load-bearing. `withOrderedLocks` serialises every claimant
+ *    of one shift behind a single advisory lock, and a blocked transaction
+ *    still holds its connection — so too small a pool makes a claim burst time
+ *    out at the POOL rather than queue at the lock. That is the P2028/P2024
+ *    failure in docs/KNOWN_ISSUES.md, and 20 is the number that fixed it.
+ *
+ *  - On Vercel, 20 is actively harmful. Each lambda gets its OWN pool, so the
+ *    figure is multiplied by the instance count, and it lands on a Supavisor
+ *    pooler running session mode with pool_size 15. One instance could
+ *    therefore exhaust the entire pooler on its own, which is what took
+ *    production down on 2026-08-29:
+ *
+ *      (EMAXCONNSESSION) max clients reached in session mode
+ *      - max clients are limited to pool_size: 15
+ *
+ * `DATABASE_POOL_MAX` still overrides both, because neither default can know
+ * about a pooler resized in the Supabase dashboard.
+ */
+export function resolvePoolMax(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  const raw = env.DATABASE_POOL_MAX?.trim()
+
+  if (!raw) {
+    // Vercel sets VERCEL=1 in the build and at runtime, on every environment.
+    return env.VERCEL ? POOL_MAX_SERVERLESS : POOL_MAX_DEFAULT
+  }
+
+  const parsed = Number(raw)
+
+  // `Number()` alone turned a typo into NaN and handed it to node-postgres,
+  // which is precisely the silent misconfiguration this file exists to make
+  // loud. Fractional values are rejected too: a pool of 2.5 is a mistake.
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new ConfigError(
+      `DATABASE_POOL_MAX must be a positive integer — got "${raw}".`,
+    )
+  }
+
+  return parsed
+}
