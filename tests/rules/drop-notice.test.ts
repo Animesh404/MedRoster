@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { activeDropNotices, dismissDropNotice, NOTICE_GRACE_MS } from '@/lib/rules/drop-notice'
 import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
 
@@ -8,6 +8,23 @@ afterAll(stopTestDb)
 const NOW = new Date('2026-08-01T12:00:00Z')
 const FUTURE = new Date('2026-08-20T09:00:00Z')
 const PAST = new Date('2026-07-20T09:00:00Z')
+
+/**
+ * `NOW`/`FUTURE`/`PAST` only mean anything relative to the wall clock, and not
+ * every path through the code under test takes an injected `now` — the ones
+ * reached via `assignClaim` read the real clock. So once the calendar passed
+ * `FUTURE` (2026-08-20), a notice these tests treat as upcoming was silently a
+ * past one, and three tests began failing with nothing in the code changed.
+ *
+ * Pinning the clock to `NOW` makes the three constants mean what their names
+ * say, permanently. Only Date is faked; timers stay real so Testcontainers'
+ * Postgres startup still works.
+ */
+beforeAll(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(NOW)
+})
+afterAll(() => { vi.useRealTimers() })
 
 async function seedNurse() {
   const db = await getTestDb()

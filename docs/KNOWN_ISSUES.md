@@ -65,8 +65,10 @@ All four of the above landed:
    window — a thundering herd against a lock that admits one at a time.
 3. **Exhaustion becomes `BUSY` → HTTP 503** with an actionable message, via `toBusyError`.
    Non-capacity errors are still rethrown, so a genuine bug is not disguised as congestion.
-4. **Pool sized deliberately** (`DATABASE_POOL_MAX`, default 20) instead of inheriting
-   node-postgres' default of 10.
+4. **Pool sized deliberately** (`DATABASE_POOL_MAX`, default 20 locally) instead of
+   inheriting node-postgres' default of 10. That 20 is correct for a long-lived host and
+   *wrong* for serverless — see "Serverless pool sizing" below, which is the same constant
+   read from the other end.
 
 Verification: `tests/concurrency/claim.test.ts` previously failed roughly half of
 full-suite runs on this hardware; it now passes three consecutive runs. Direct coverage
@@ -325,3 +327,58 @@ with a day). It covers "what happened to this shift recently" across a full rota
 slack. **Changing this number shortens what the activity timeline can show** — it is a product
 decision, not a tuning constant.
 
+## ~~Serverless pool sizing exhausts the Supabase pooler~~ — FIXED (2026-08-29)
+
+Every signed-in page on the Vercel deployment failed, and the sign-in button appeared to
+report a session limit:
+
+```
+prisma:error Invalid `prisma.user.count()` invocation:
+Database error. Code: `XX000`. Message:
+`(EMAXCONNSESSION) max clients reached in session mode - max clients are limited to pool_size: 15`
+```
+
+**The error names the wrong subsystem.** "Max clients reached in session mode" is Supabase's
+Supavisor pooler, not Supabase Auth and not a per-user session cap. Password sign-in itself
+succeeded — Auth is a separate HTTP service that never touches Postgres from this app.
+`POST /login` then ran `prisma.user.findUnique` for the roster gate
+(`app/login/actions.ts`), and *that* is what hit the exhausted pooler. Anyone debugging
+from the UI wording alone will look at auth for a long time and find nothing wrong.
+
+**Root cause: a per-instance constant multiplied by an instance count.**
+
+- `DATABASE_URL_PROD` points at Supavisor in **session mode**, where each client connection
+  holds a dedicated Postgres backend for its whole lifetime. Pool size: 15.
+- `lib/db/client.ts` sized its node-postgres pool at `DATABASE_POOL_MAX ?? 20`.
+- `DATABASE_POOL_MAX` was never set on Vercel, so the default applied — and each lambda
+  builds its **own** pool. A single warm instance could therefore ask for 20 of 15 available
+  clients and exhaust the pooler unaided; concurrent instances guaranteed it.
+
+The 20 was not arbitrary — it is the number that fixed the claim-contention bug at the top
+of this file. It is right for one long-lived process against a local Postgres and wrong for
+N short-lived processes behind a pooler. **The bug was treating a deployment property as an
+application constant.**
+
+### Fix
+
+`resolvePoolMax()` (`lib/config/database-url.ts`) now defaults to 1 when `VERCEL` is set and
+keeps 20 otherwise, with `DATABASE_POOL_MAX` still overriding both — no pooler-size default
+can know about a pool resized in the Supabase dashboard. It also rejects a non-integer or
+non-positive value rather than passing `NaN` to node-postgres, which is how the previous
+`Number(...)` call would have failed.
+
+Covered by `tests/config/database-url.test.ts`. The function is pure and env-injected, so
+the serverless default is tested without a serverless host.
+
+### Still outstanding: session mode is the wrong pooler mode
+
+Capping the pool stops the exhaustion but leaves the deployment on **session mode**, which
+does not multiplex and so caps the app at roughly `pool_size` concurrent instances.
+`DATABASE_URL_PROD` should move to the **transaction-mode** pooler (port `6543` rather than
+`5432`) — the supported configuration for serverless, and where the 1-connection default
+above is designed to sit.
+
+This is safe to do whenever someone holds the credential: every lock this codebase takes is
+`pg_advisory_xact_lock` (`lib/rules/locks.ts`), which is transaction-scoped and therefore
+survives transaction-mode pooling intact. A session-scoped `pg_advisory_lock` would not
+have, which is the usual reason a codebase is pinned to session mode — it does not apply here.
