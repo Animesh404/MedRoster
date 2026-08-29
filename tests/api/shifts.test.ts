@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getTestDb, resetTestDb, stopTestDb } from '../helpers/db'
 import { encodeCursor } from '@/lib/db/paginate'
 
@@ -56,6 +56,30 @@ async function asManager() {
 beforeEach(() => { session = null })
 beforeEach(resetTestDb)
 afterAll(stopTestDb)
+
+/**
+ * Wall-clock time is an INPUT to this file, so it is pinned.
+ *
+ * Every date below is absolute, and the route rejects any shift that starts in
+ * the past — so a fixture written as "a future date" silently becomes a past
+ * one as the calendar advances, and the test flips from 201 to 400 with nothing
+ * in the code having changed. That is not hypothetical: the MIN-5 block was
+ * frozen on its own in 8e775ad for exactly this reason, and the blocks left on
+ * real time failed the same way three weeks later.
+ *
+ * Freezing file-wide rather than per-describe is the point — a per-block fix
+ * only postpones the next rot to whichever block was missed.
+ *
+ * `toFake: ['Date']` is deliberate: timers stay real, because Testcontainers'
+ * Postgres startup and pg's own connection timeouts need them to fire.
+ */
+const FROZEN_NOW = new Date('2026-08-01T12:00:00Z')
+
+beforeAll(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(FROZEN_NOW)
+})
+afterAll(() => { vi.useRealTimers() })
 
 describe('POST /api/shifts', () => {
   it('creates a single shift with the resolved UTC window', async () => {
@@ -476,8 +500,7 @@ describe('POST /api/shifts — recurrence bounds (MIN-5)', () => {
   // Frozen so occurrence expansion stays in the future as the calendar advances.
   // (Past-window validation in route.ts rejects any occurrence with startsAt <= now.)
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ['Date'] })
-    vi.setSystemTime(new Date('2026-08-01T12:00:00Z'))
+    vi.setSystemTime(FROZEN_NOW)
   })
   afterEach(() => {
     vi.useRealTimers()
